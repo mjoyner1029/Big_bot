@@ -1,0 +1,15 @@
+pandas
+numpy
+scikit-learn
+ta
+yfinance
+matplotlib
+seaborn
+requests
+ccxt
+openai
+nltk
+beautifulsoup4
+lxml
+vaderSentiment
+python-dotenv
