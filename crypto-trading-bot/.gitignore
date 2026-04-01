@@ -1,0 +1,36 @@
+# Environment / secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Models (binary, large)
+models/saved/*.pkl
+
+# Logs & state
+logs/bot.log
+logs/bot_state.json
+logs/trade_log.csv
+
+# Data caches
+data/historical/*.csv
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

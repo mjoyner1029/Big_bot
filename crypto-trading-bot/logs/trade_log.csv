@@ -1,1 +1,1 @@
-timestamp,symbol,side,entry_price,tp_price,sl_price,confidence,result
+timestamp,symbol,side,entry_price,tp_price,sl_price,confidence,qty,result,exit_price,pnl
