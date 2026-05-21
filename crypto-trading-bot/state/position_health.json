@@ -1,0 +1,22 @@
+{
+  "null": {
+    "position_id": null,
+    "first_seen": "2026-05-07T14:38:25.118968",
+    "loss_strikes": 0,
+    "stale_strikes": 0,
+    "last_check": null,
+    "best_pnl_usd": 0,
+    "best_pnl_pct": 0,
+    "checks_count": 0
+  },
+  "null": {
+    "position_id": null,
+    "first_seen": "2026-05-07T14:53:26.284692",
+    "loss_strikes": 0,
+    "stale_strikes": 0,
+    "last_check": "2026-05-08T10:04:14.473288",
+    "best_pnl_usd": 1346.9824384073468,
+    "best_pnl_pct": 8.418640240117318,
+    "checks_count": 24
+  }
+}

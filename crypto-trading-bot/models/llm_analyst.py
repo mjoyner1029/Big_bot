@@ -61,7 +61,7 @@ def _call_claude(
     if client is None:
         return None
 
-    model = CONFIG.get("anthropic_model", "claude-sonnet-4-20250514")
+    model = CONFIG.get("anthropic_model", "claude-3-5-sonnet-latest")
     try:
         message = client.messages.create(
             model=model,

@@ -39,10 +39,25 @@ from dashboard.components import (
     format_positions_df,
     format_trades_df,
 )
+from dashboard.autonomous_components import (
+    load_autonomous_journal,
+    load_cost_tracker,
+    build_learning_metrics_card,
+    build_symbol_preferences_chart,
+    build_win_rate_by_confidence_chart,
+    build_recent_decisions_table,
+    build_velocity_gauges,
+    build_cost_efficiency_card,
+    build_cost_breakdown_chart,
+    filter_autonomous_logs,
+    load_recent_log_entries,
+    build_world_events_card,
+    build_learning_progress_chart,
+)
 
-# ── Page config ───────────────────────────────────────────────────
+# Page config
 st.set_page_config(
-    page_title="Trading Bot Dashboard",
+    page_title="LIMITLESS - Autonomous AI Trading",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -96,9 +111,10 @@ def _refresh_market_data(symbols=None, force=False):
     })
 
 
-# ── Sidebar ───────────────────────────────────────────────────────
+# Sidebar
 with st.sidebar:
-    st.title("Trading Bot")
+    st.title("LIMITLESS")
+    st.caption("Autonomous AI Trading with Superhuman Intelligence")
     st.caption(f"Asset class: **{CONFIG['asset_class']}**")
     st.caption(f"Paper mode: **{CONFIG['use_paper_trading']}**")
     st.caption(f"LLM enabled: **{CONFIG.get('use_llm', False)}**")
@@ -116,9 +132,9 @@ with st.sidebar:
     st.caption("Powered by Streamlit + Plotly")
 
 
-# ── Tab bar ───────────────────────────────────────────────────────
-tab_dash, tab_charts, tab_trade, tab_chat, tab_logs = st.tabs(
-    ["Dashboard", "Charts", "Trade", "Chat", "Logs"]
+# Tab bar
+tab_dash, tab_charts, tab_trade, tab_autonomous, tab_chat, tab_logs = st.tabs(
+    ["Dashboard", "Charts", "Trade", "Autonomous AI", "Chat", "Logs"]
 )
 
 # Ensure we have data
@@ -353,7 +369,201 @@ with tab_trade:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  TAB 4 — Chat with Claude
+#  TAB 4 — Autonomous AI (Real-Time Learning & Analysis)
+# ══════════════════════════════════════════════════════════════════
+with tab_autonomous:
+    st.header("Autonomous Trading System")
+    st.caption("Real-time monitoring of autonomous decision-making, learning, and analysis")
+    
+    # Auto-refresh toggle
+    col_refresh, col_interval = st.columns([3, 1])
+    with col_refresh:
+        auto_refresh = st.checkbox("Auto-refresh (every 30s)", value=False)
+    with col_interval:
+        if auto_refresh:
+            st.info("Auto-refreshing...")
+            time.sleep(30)
+            st.rerun()
+    
+    st.divider()
+    
+    # Load data
+    journal = load_autonomous_journal()
+    cost_data = load_cost_tracker()
+    portfolio = _get_portfolio()
+    prices = _current_prices()
+    summary = portfolio.summary(prices)
+    
+    # Section 1: Learning Metrics
+    st.subheader("Learning & Performance")
+    
+    metrics = build_learning_metrics_card(journal)
+    velocity = build_velocity_gauges(journal)
+    
+    # KPI Row
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total Decisions", metrics["total_decisions"])
+    col2.metric("Trades Executed", metrics["executed"])
+    col3.metric("Win Rate", f"{metrics['win_rate']:.1%}" if metrics['with_outcomes'] > 0 else "N/A")
+    col4.metric("Trades/Hour", f"{velocity['current_velocity']:.1f}")
+    col5.metric("Execution Rate", f"{velocity['execution_rate']:.1f}%")
+    
+    # Charts Row
+    col_prog, col_conf = st.columns(2)
+    with col_prog:
+        st.plotly_chart(
+            build_learning_progress_chart(journal),
+            use_container_width=True,
+        )
+    with col_conf:
+        st.plotly_chart(
+            build_win_rate_by_confidence_chart(journal),
+            use_container_width=True,
+        )
+    
+    # Symbol Preferences
+    st.plotly_chart(
+        build_symbol_preferences_chart(journal),
+        use_container_width=True,
+    )
+    
+    st.divider()
+    
+    # Section 2: World Events & Market Analysis
+    st.subheader("World Events Analysis")
+    
+    events = build_world_events_card()
+    
+    if events["available"]:
+        col_sent, col_mag, col_summary = st.columns([1, 1, 2])
+        
+        with col_sent:
+            sentiment_color = "normal"
+            if events["sentiment"] > 0.3:
+                sentiment_color = "normal"
+            elif events["sentiment"] < -0.3:
+                sentiment_color = "inverse"
+            
+            st.metric(
+                "Market Sentiment",
+                f"{events['sentiment']:+.2f}",
+                delta="Bullish" if events["sentiment"] > 0 else "Bearish",
+                delta_color=sentiment_color,
+            )
+        
+        with col_mag:
+            st.metric(
+                "Event Magnitude",
+                f"{events['magnitude']:.2f}",
+                help="0 = negligible, 1 = major market-moving events"
+            )
+        
+        with col_summary:
+            st.info(f"**Summary:** {events['summary']}")
+    else:
+        st.warning("World events analysis not available. Ensure the bot is running with `enable_world_events_analysis: True`")
+    
+    st.divider()
+    
+    # Section 3: Cost Tracking & Efficiency
+    st.subheader("Cost Tracking & Efficiency")
+    
+    cost_metrics = build_cost_efficiency_card(cost_data, summary["total_realised_pnl"])
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Costs", f"${cost_metrics['total_costs']:.2f}")
+    col2.metric("Net P&L", f"${cost_metrics['net_pnl']:.2f}")
+    col3.metric("Cost Ratio", f"{cost_metrics['cost_ratio']:.1f}%")
+    col4.metric("Efficiency", cost_metrics['efficiency'])
+    
+    col_breakdown, col_details = st.columns([1, 1])
+    
+    with col_breakdown:
+        st.plotly_chart(
+            build_cost_breakdown_chart(cost_data),
+            use_container_width=True,
+        )
+    
+    with col_details:
+        st.write("**Cost Details:**")
+        st.write(f"- Exchange Fees: ${cost_metrics['fees']:.2f}")
+        st.write(f"- Slippage: ${cost_metrics['slippage']:.2f}")
+        st.write(f"- API Costs: ${cost_metrics['api_costs']:.2f}")
+        st.write(f"- Total Trades: {cost_metrics['total_trades']}")
+        st.write(f"- Avg Cost/Trade: ${cost_metrics['total_costs'] / max(1, cost_metrics['total_trades']):.2f}")
+        
+        st.caption("**Efficiency Benchmarks:**")
+        st.caption("- Excellent: < 5% (Claude-level)")
+        st.caption("- Good: 5-15%")
+        st.caption("- Acceptable: 15-25%")
+        st.caption("- WARNING Poor: > 25%")
+    
+    st.divider()
+    
+    # Section 4: Recent Decisions & Reasoning
+    st.subheader("Recent Autonomous Decisions")
+    
+    decisions_df = build_recent_decisions_table(journal, limit=30)
+    
+    if not decisions_df.empty:
+        st.dataframe(
+            decisions_df,
+            use_container_width=True,
+            height=400,
+        )
+    else:
+        st.info("No decisions recorded yet. Start the bot to see autonomous decision-making in action.")
+    
+    st.divider()
+    
+    # Section 5: Live Decision Log
+    st.subheader("Live Decision Log")
+    st.caption("Real-time feed of autonomous decisions and reasoning")
+    
+    log_lines = load_recent_log_entries("logs/bot.log", lines=200)
+    filtered_logs = filter_autonomous_logs(log_lines)
+    
+    if filtered_logs:
+        log_text = "\n".join(filtered_logs[-30:])  # Last 30 relevant entries
+        st.text_area(
+            "Recent Autonomous Activity",
+            value=log_text,
+            height=400,
+            disabled=True,
+        )
+    else:
+        st.info("No autonomous activity logged yet. Ensure the bot is running.")
+    
+    # Quick actions
+    st.divider()
+    col_save, col_reset, col_status = st.columns(3)
+    
+    with col_save:
+        if st.button("Save Learning State", use_container_width=True):
+            try:
+                from models.autonomous_agent import get_autonomous_agent
+                agent = get_autonomous_agent()
+                agent.save_journal()
+                st.success("Learning state saved!")
+            except Exception as e:
+                st.error(f"Error: {e}")
+    
+    with col_reset:
+        if st.button("Refresh Data", use_container_width=True):
+            st.rerun()
+    
+    with col_status:
+        if st.button("Get Full Status", use_container_width=True):
+            try:
+                from autonomous_mode import get_autonomous_status
+                status = get_autonomous_status()
+                st.json(status)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════
+#  TAB 5 — Chat with Claude
 # ══════════════════════════════════════════════════════════════════
 with tab_chat:
     st.subheader("Chat with Claude -- Market Analyst")
@@ -429,7 +639,7 @@ with tab_chat:
                             messages.append({"role": m["role"], "content": m["content"]})
 
                         message = client.messages.create(
-                            model=CONFIG.get("anthropic_model", "claude-sonnet-4-20250514"),
+                            model=CONFIG.get("anthropic_model", "claude-3-5-sonnet-latest"),
                             max_tokens=2048,
                             temperature=0.4,
                             system=_build_system_prompt(),
@@ -445,7 +655,7 @@ with tab_chat:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  TAB 5 — Logs
+#  TAB 6 — Logs
 # ══════════════════════════════════════════════════════════════════
 with tab_logs:
     log_col1, log_col2 = st.columns(2)

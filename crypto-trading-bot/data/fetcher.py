@@ -5,6 +5,7 @@ import os
 from typing import Optional, List
 from config.config import CONFIG
 from datetime import datetime
+from trading.rate_limiter import get_yfinance_limiter
 
 
 def fetch_latest_market_data(
@@ -25,6 +26,12 @@ def fetch_latest_market_data(
     ticker = ticker or CONFIG.get("symbol", "ETH-USD")
     period = period or CONFIG.get("period", "3mo")
     interval = interval or CONFIG.get("interval", "1h")
+    
+    # Apply rate limiting
+    rate_limiter = get_yfinance_limiter()
+    if CONFIG.get("rate_limiting_enabled", True):
+        rate_limiter.wait_if_needed()
+    
     try:
         data = yf.download(ticker, period=period, interval=interval, progress=False)
         if data is None or data.empty:

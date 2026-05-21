@@ -2,6 +2,10 @@
 
 State is persisted to a JSON file so the bot can restart without losing
 track of its positions.
+
+Trading Mode Support:
+  Inspired by Claude's autonomous 48hr experiment, supports different risk
+  profiles from conservative to high-frequency trading with micro-sizing.
 """
 import json
 import logging
@@ -9,7 +13,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from config.config import CONFIG
+from config.config import CONFIG, get_mode_config
 from logs.trade_logger import log_trade
 from strategies.thresholds import get_trade_thresholds
 
@@ -101,37 +105,126 @@ class PortfolioManager:
     # ── Persistence ───────────────────────────────────────────────
 
     def _load_state(self) -> None:
-        if os.path.exists(self.state_path):
+        """Load portfolio state with corruption detection and recovery.
+        
+        Attemptsto load from main state file. If corrupted, tries backup.
+        Validates checksum to detect corruption.
+        """
+        import hashlib
+        
+        def _try_load_file(filepath: str) -> Optional[dict]:
+            """Try to load and validate a state file"""
+            if not os.path.exists(filepath):
+                return None
+            
             try:
-                with open(self.state_path, "r") as f:
+                with open(filepath, "r") as f:
                     state = json.load(f)
-                self.cash = state.get("cash", self.starting_capital)
-                self.open_positions = state.get("open_positions", [])
-                self.closed_trades = state.get("closed_trades", [])
-                logging.info(
-                    f"[Portfolio] Loaded state: cash=${self.cash:.2f}, "
-                    f"{len(self.open_positions)} open, {len(self.closed_trades)} closed"
-                )
+                
+                # Verify checksum if present
+                if "checksum" in state:
+                    expected = state["checksum"]
+                    positions_str = json.dumps(state.get("open_positions", []), sort_keys=True)
+                    actual = hashlib.md5(positions_str.encode()).hexdigest()
+                    
+                    if expected != actual:
+                        logging.error(f"[Portfolio] Checksum mismatch in {filepath}")
+                        return None
+                
+                return state
+                
             except Exception as e:
-                logging.warning(f"[Portfolio] Could not load state: {e}")
+                logging.error(f"[Portfolio] Failed to load {filepath}: {e}")
+                return None
+        
+        # Try loading main state file
+        state = _try_load_file(self.state_path)
+        
+        # If failed, try backup
+        if state is None:
+            backup_path = self.state_path + ".backup"
+            logging.warning(f"[Portfolio] Main state file corrupted, trying backup")
+            state = _try_load_file(backup_path)
+            
+            if state is not None:
+                logging.info(f"[Portfolio] Successfully loaded from backup")
+                # Save the backup as new main file
+                try:
+                    import shutil
+                    shutil.copy2(backup_path, self.state_path)
+                except Exception as e:
+                    logging.warning(f"[Portfolio] Could not restore backup: {e}")
+        
+        # Load state if we have it
+        if state is not None:
+            self.cash = state.get("cash", self.starting_capital)
+            self.open_positions = state.get("open_positions", [])
+            self.closed_trades = state.get("closed_trades", [])
+            logging.info(
+                f"[Portfolio] Loaded state: cash=${self.cash:.2f}, "
+                f"{len(self.open_positions)} open, {len(self.closed_trades)} closed"
+            )
+        else:
+            logging.warning(f"[Portfolio] Could not load state file, starting fresh")
 
     def save_state(self) -> None:
+        """Save portfolio state with atomic write to prevent corruption.
+        
+        Uses atomic write pattern:
+        1. Write to temp file
+        2. Backup existing state
+        3. Atomic rename to actual state file
+        
+        This ensures the state file is never left in a corrupted state.
+        """
+        import tempfile
+        import shutil
+        import hashlib
+        
         os.makedirs(os.path.dirname(self.state_path) or ".", exist_ok=True)
-        with open(self.state_path, "w") as f:
-            json.dump({
-                "cash": self.cash,
-                "open_positions": self.open_positions,
-                "closed_trades": self.closed_trades[-500:],  # keep last 500
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }, f, indent=2, default=str)
+        
+        # Prepare data with checksum
+        data = {
+            "cash": self.cash,
+            "open_positions": self.open_positions,
+            "closed_trades": self.closed_trades[-500:],  # keep last 500
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        # Add checksum for validation
+        positions_str = json.dumps(self.open_positions, sort_keys=True)
+        data["checksum"] = hashlib.md5(positions_str.encode()).hexdigest()
+        
+        # Write to temp file first
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".json", prefix="portfolio_", dir=os.path.dirname(self.state_path) or ".")
+        try:
+            with os.fdopen(temp_fd, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+            
+            # Backup existing state if it exists
+            if os.path.exists(self.state_path):
+                backup_path = self.state_path + ".backup"
+                shutil.copy2(self.state_path, backup_path)
+            
+            # Atomic rename (this is atomic on POSIX systems)
+            shutil.move(temp_path, self.state_path)
+            logging.debug(f"[Portfolio] State saved atomically to {self.state_path}")
+            
+        except Exception as e:
+            # Clean up temp file on error
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            logging.error(f"[Portfolio] Failed to save state: {e}", exc_info=True)
+            raise
 
     # ── Risk gates ────────────────────────────────────────────────
 
     def can_open_position(self, signal: Dict[str, Any]) -> bool:
         """Check whether a new position is allowed under risk limits."""
-        # Max open positions
-        if len(self.open_positions) >= CONFIG["max_open_positions"]:
-            logging.warning("[Portfolio] Max open positions reached")
+        # Max open positions (mode-aware)
+        max_positions = get_mode_config("max_open_positions")
+        if len(self.open_positions) >= max_positions:
+            logging.warning(f"[Portfolio] Max open positions reached ({max_positions})")
             return False
 
         # Already holding this symbol?
@@ -147,11 +240,12 @@ class PortfolioManager:
             logging.warning(f"[Portfolio] Insufficient cash (${self.cash:.2f}) for ${cost:.2f}")
             return False
 
-        # Max position % of total equity
+        # Max position % of total equity (mode-aware)
         equity = self.total_equity(current_prices={})
-        max_cost = equity * CONFIG["max_position_pct"]
+        max_position_pct = get_mode_config("max_position_pct")
+        max_cost = equity * max_position_pct
         if cost > max_cost:
-            logging.warning(f"[Portfolio] Position ${cost:.2f} exceeds {CONFIG['max_position_pct']*100}% limit")
+            logging.warning(f"[Portfolio] Position ${cost:.2f} exceeds {max_position_pct*100}% limit")
             return False
 
         return True
@@ -167,7 +261,8 @@ class PortfolioManager:
         the thresholds module based on confidence and asset type.
         """
         equity = self.total_equity(current_prices={})
-        risk_amt = equity * CONFIG["risk_per_trade_pct"]
+        risk_per_trade_pct = get_mode_config("risk_per_trade_pct")
+        risk_amt = equity * risk_per_trade_pct
         entry = signal["entry_price"]
 
         sl = signal.get("stop_loss_price")
@@ -197,10 +292,20 @@ class PortfolioManager:
 
         qty = risk_amt / distance
 
-        # Cap by max_position_pct
-        max_cost = equity * CONFIG["max_position_pct"]
+        # Cap by max_position_pct (mode-aware)
+        max_position_pct = get_mode_config("max_position_pct")
+        max_cost = equity * max_position_pct
         max_qty = max_cost / entry if entry else 0
         qty = min(qty, max_qty)
+
+        # Apply discipline-layer size multiplier (loss streak, regime, correlation)
+        size_mult = signal.get("_size_mult", 1.0)
+        if size_mult != 1.0:
+            qty *= size_mult
+            logging.info(
+                f"[Portfolio] Size adjusted by discipline: "
+                f"×{size_mult:.2f} → {qty:.6f}"
+            )
 
         return round(qty, 6)
 
@@ -281,6 +386,21 @@ class PortfolioManager:
             f"[Portfolio] Closed {side} {qty:.6f} {position['symbol']} "
             f"@ ${exit_price:.2f}  PnL=${pnl:.2f}  result={result}"
         )
+        
+        # ── Autonomous learning callback ──────────────────────────
+        if CONFIG.get("enable_autonomous_learning", True):
+            try:
+                from models.autonomous_agent import get_autonomous_agent
+                agent = get_autonomous_agent()
+                agent.learn_from_trade_outcome(
+                    trade_id=position.get("order_id", "unknown"),
+                    symbol=position["symbol"],
+                    pnl=pnl,
+                    confidence_used=position.get("confidence", 0.5),
+                    market_condition=position.get("_regime", "unknown"),
+                )
+            except Exception as e:
+                logging.warning(f"[Portfolio] Autonomous learning failed: {e}")
 
     # ── Equity & stats ────────────────────────────────────────────
 

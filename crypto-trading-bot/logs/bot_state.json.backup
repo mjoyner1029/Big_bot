@@ -1,0 +1,55 @@
+{
+  "cash": 64206.22965432263,
+  "open_positions": [
+    {
+      "symbol": "XRP-USD",
+      "side": "buy",
+      "asset_type": "crypto",
+      "entry_price": 1.4265999794006348,
+      "qty": 14019.346901,
+      "cost": 20000.0,
+      "take_profit_price": 1.4498,
+      "stop_loss_price": 1.4165,
+      "trailing_stop_pct": 0.006797,
+      "confidence": 0.607,
+      "opened_at": "2026-04-21T04:27:42.957052+00:00",
+      "order_id": null
+    },
+    {
+      "symbol": "LINK-USD",
+      "side": "buy",
+      "asset_type": "crypto",
+      "entry_price": 9.309000015258789,
+      "qty": 1718.766782,
+      "cost": 16000.0,
+      "take_profit_price": 9.4897,
+      "stop_loss_price": 9.2294,
+      "trailing_stop_pct": 0.008662,
+      "confidence": 0.5565,
+      "opened_at": "2026-04-21T04:27:44.664018+00:00",
+      "order_id": null
+    }
+  ],
+  "closed_trades": [
+    {
+      "symbol": "AVAX-USD",
+      "side": "buy",
+      "asset_type": "crypto",
+      "entry_price": 9.3100004196167,
+      "qty": 1288.936569,
+      "cost": 12000.0,
+      "take_profit_price": 9.4973,
+      "stop_loss_price": 9.1755,
+      "trailing_stop_pct": 0.008669,
+      "confidence": 0.5839,
+      "opened_at": "2026-04-21T04:39:24.360630+00:00",
+      "order_id": null,
+      "exit_price": 9.470000267028809,
+      "pnl": 206.23,
+      "result": "HEALTH_CHECK",
+      "closed_at": "2026-05-07T21:41:10.635303+00:00"
+    }
+  ],
+  "updated_at": "2026-05-07T21:41:10.635325+00:00",
+  "checksum": "e3217795eeb9390e77942f585423a141"
+}

@@ -1,0 +1,37 @@
+{
+  "outcome_patterns": {},
+  "win_rate_by_confidence": {
+    "0.5": [
+      1,
+      1
+    ],
+    "0.6": [
+      0,
+      1
+    ]
+  },
+  "win_rate_by_symbol": {
+    "AVAX-USD": [
+      1,
+      1
+    ],
+    "XRP-USD": [
+      0,
+      1
+    ]
+  },
+  "win_rate_by_market_condition": {
+    "unknown": [
+      1,
+      2
+    ]
+  },
+  "confidence_adjustment": 0.0,
+  "symbol_preferences": {
+    "AVAX-USD": 0.01,
+    "XRP-USD": -0.01
+  },
+  "news_impact_weights": {},
+  "recent_decisions": [],
+  "updated_at": "2026-05-07T21:48:26.553761+00:00"
+}

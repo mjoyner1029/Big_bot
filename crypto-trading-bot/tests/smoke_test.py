@@ -1,4 +1,7 @@
 """Smoke-test: verify all modules import cleanly and key functions work."""
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.fetcher import fetch_latest_market_data, fetch_multiple_symbols
 from indicators.ta_indicators import add_ta_indicators, get_latest_indicator_snapshot
@@ -35,4 +38,4 @@ print(f"Portfolio cash: ${pm.cash}")
 vader = score_text("Bitcoin surges to new all-time high as institutions buy aggressively")
 print(f"VADER score (bullish headline): {vader:.4f}")
 
-print("\n✅  All checks passed")
+print("\nSUCCESS: All checks passed")

@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Check Coinbase API configuration."""
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from config.config import CONFIG
+
+print('=' * 70)
+print('COINBASE API CONFIGURATION')
+print('=' * 70)
+print()
+
+cb_key = CONFIG.get('coinbase_api_key', '')
+cb_secret = CONFIG.get('coinbase_api_secret', '')  
+cb_pass = CONFIG.get('coinbase_passphrase', '')
+
+print('Current Status:')
+print(f'  COINBASE_API_KEY:        {"✅ SET (" + str(len(cb_key)) + " chars)" if cb_key else "❌ NOT SET"}')
+print(f'  COINBASE_API_SECRET:     {"✅ SET (" + str(len(cb_secret)) + " chars)" if cb_secret else "❌ NOT SET"}')
+print(f'  COINBASE_PASSPHRASE:     {"❌ MISSING" if not cb_pass else "✅ SET (" + str(len(cb_pass)) + " chars)"}')
+print()
+
+if not cb_pass:
+    print('=' * 70)
+    print('⚠️  MISSING: COINBASE_PASSPHRASE')
+    print('=' * 70)
+    print()
+    print('What is the passphrase?')
+    print('  • When you created your Coinbase API key, you set a passphrase')
+    print('  • This is a secret phrase YOU chose (like a password)')
+    print('  • It\'s required along with API key and secret for authentication')
+    print()
+    print('Where to find it:')
+    print('  • You saved it when you created the API key')
+    print('  • If lost, you must create a NEW API key (can\'t recover old passphrase)')
+    print()
+    print('How to add it:')
+    print(f'  1. Edit file: {os.path.abspath("../.env")}')
+    print('  2. Add this line:')
+    print()
+    print('     COINBASE_PASSPHRASE=your_passphrase_here')
+    print()
+    print('  3. Save and restart the bot')
+    print()
+    print('=' * 70)
+    print()
+    print('Example .env file structure:')
+    print('-' * 70)
+    print('# Coinbase API (for crypto trading)')
+    print('COINBASE_API_KEY=your_api_key_here')
+    print('COINBASE_API_SECRET=your_api_secret_here')
+    print('COINBASE_PASSPHRASE=your_passphrase_here  # <-- ADD THIS LINE')
+    print()
+    print('# Alpaca API (for stock trading)')
+    print('ALPACA_API_KEY=your_alpaca_key')
+    print('# ... rest of config')
+    print('-' * 70)
+    print()
+    
+else:
+    print('✅ All Coinbase credentials are configured!')
+    print()
+    print('Ready for crypto trading on Coinbase.')
+    print()
+
+print('=' * 70)
+print('IMPORTANT NOTES')
+print('=' * 70)
+print()
+print('• Paper trading is ENABLED (safe mode - no real money)')
+print('• Trading capital: $' + str(CONFIG.get('capital', 0)))
+print('• Exchange: ' + CONFIG.get('exchange', 'coinbase'))
+print()
+print('To enable LIVE trading:')
+print('  • Set use_paper_trading: False in config/config.py')
+print('  • Set capital amount via TRADING_CAPITAL env variable')
+print('  • ⚠️  Use at your own risk with real money!')
+print()

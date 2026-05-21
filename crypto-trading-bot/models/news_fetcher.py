@@ -12,7 +12,12 @@ All sources are tried in parallel via ThreadPoolExecutor.
 import logging
 import re
 import time
+import warnings
 import requests
+
+# Silence BS4 XML-as-HTML warning for RSS parsing
+from bs4 import XMLParsedAsHTMLWarning
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional

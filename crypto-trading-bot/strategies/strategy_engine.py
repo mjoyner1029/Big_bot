@@ -12,6 +12,68 @@ from models.price_predictor import predict_price_movement
 from models.sentiment_model import analyze_sentiment
 from strategies.thresholds import get_trade_thresholds
 from config.config import CONFIG, is_crypto
+from data.fetcher import fetch_latest_market_data
+
+# Government contract monitoring (optional)
+_gov_contract_cache = {}  # Cache to avoid repeated API calls
+
+
+# ── Government Contract Signal ────────────────────────────────────
+
+def _check_government_contract_signal(symbol: str, stock_watchlist: list) -> Optional[Dict[str, Any]]:
+    """
+    Check if symbol has a recent major government contract award.
+    This is a HIGH-CONFIDENCE signal that can override normal TA.
+    
+    Returns contract signal dict if found, None otherwise.
+    """
+    # Only check stocks (not crypto)
+    if is_crypto(symbol):
+        return None
+    
+    # Check if feature is enabled
+    if not CONFIG.get("enable_gov_contracts", False):
+        return None
+    
+    # Use cache to avoid hammering USAspending API every cycle
+    cache_key = "gov_contracts"
+    if cache_key in _gov_contract_cache:
+        cached_time, cached_signals = _gov_contract_cache[cache_key]
+        # Cache for 1 hour
+        if (datetime.now() - cached_time).total_seconds() < 3600:
+            # Check if current symbol has a contract signal
+            for sig in cached_signals:
+                if sig["ticker"] == symbol:
+                    logging.info(f"[Gov Contract] Using cached signal for {symbol}")
+                    return sig
+            return None
+    
+    # Fetch fresh contract data
+    try:
+        from data.usaspending_monitor import get_contract_signals
+        
+        min_contract_amount = CONFIG.get("min_contract_amount", 50_000_000)
+        lookback_days = CONFIG.get("gov_contract_lookback_days", 7)
+        signals = get_contract_signals(
+            stock_watchlist,
+            min_amount=min_contract_amount,
+            lookback_days=lookback_days
+        )
+        
+        # Cache the results
+        _gov_contract_cache[cache_key] = (datetime.now(), signals)
+        
+        # Check if current symbol has a signal
+        for sig in signals:
+            if sig["ticker"] == symbol:
+                logging.info(f"[Gov Contract] Fresh signal for {symbol}: {sig['reason']}")
+                return sig
+        
+        return None
+        
+    except Exception as e:
+        logging.warning(f"[Gov Contract] Failed to check contracts: {e}")
+        return None
 
 
 # ── TA scoring ────────────────────────────────────────────────────
@@ -133,6 +195,105 @@ def _compute_sell_ta_score(row: pd.Series) -> Optional[float]:
     return points / total
 
 
+# ── Multi-timeframe confirmation ──────────────────────────────────
+
+# Cache daily-TF data to avoid re-fetching every bar
+_daily_cache: Dict[str, Any] = {}  # {symbol: {"df": DataFrame, "fetched_at": datetime}}
+_DAILY_CACHE_TTL = 3600  # refresh daily TF cache every hour
+
+
+def _get_daily_bias(symbol: str, df_hourly: pd.DataFrame) -> Optional[str]:
+    """Determine the higher-timeframe (daily) trend bias.
+
+    Uses daily-timeframe data if available, falling back to resampling
+    the hourly data.  Returns 'bullish', 'bearish', or None.
+    """
+    if not CONFIG.get("use_multi_timeframe", True):
+        return None
+
+    if CONFIG.get("backtest_mode", False):
+        # In backtest mode, resample hourly to daily
+        return _resample_daily_bias(df_hourly)
+
+    now = datetime.now(timezone.utc)
+    cached = _daily_cache.get(symbol)
+
+    if cached and (now - cached["fetched_at"]).total_seconds() < _DAILY_CACHE_TTL:
+        df_daily = cached["df"]
+    else:
+        try:
+            df_daily = fetch_latest_market_data(ticker=symbol, period="3mo", interval="1d")
+            if df_daily is not None and len(df_daily) >= 50:
+                _daily_cache[symbol] = {"df": df_daily, "fetched_at": now}
+            else:
+                return _resample_daily_bias(df_hourly)
+        except Exception:
+            return _resample_daily_bias(df_hourly)
+
+    try:
+        df_daily = add_ta_indicators(df_daily)
+        last = df_daily.iloc[-1]
+
+        ema20 = last.get("ema20")
+        ema50 = last.get("ema50")
+        close = last.get("Close")
+        adx = last.get("adx")
+        adx_pos = last.get("adx_pos", 0)
+        adx_neg = last.get("adx_neg", 0)
+
+        if any(v is None or (isinstance(v, float) and pd.isna(v))
+               for v in [ema20, ema50, close]):
+            return None
+
+        close, ema20, ema50 = float(close), float(ema20), float(ema50)
+
+        # Strong daily trend: price above both EMAs + ADX confirms
+        if close > ema20 > ema50:
+            if adx is not None and float(adx) > 20 and float(adx_pos) > float(adx_neg):
+                return "bullish"
+            return "bullish" if close > ema20 * 1.005 else None
+
+        if close < ema20 < ema50:
+            if adx is not None and float(adx) > 20 and float(adx_neg) > float(adx_pos):
+                return "bearish"
+            return "bearish" if close < ema20 * 0.995 else None
+
+    except Exception as e:
+        logging.debug(f"[Strategy] Daily TF analysis failed for {symbol}: {e}")
+
+    return None
+
+
+def _resample_daily_bias(df_hourly: pd.DataFrame) -> Optional[str]:
+    """Resample hourly bars to daily and compute trend bias."""
+    try:
+        if len(df_hourly) < 200:
+            return None
+        # Resample to daily bars
+        daily = df_hourly.resample("1D").agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum"
+        }).dropna()
+        if len(daily) < 20:
+            return None
+        daily = add_ta_indicators(daily)
+        last = daily.iloc[-1]
+        ema20 = last.get("ema20")
+        ema50 = last.get("ema50")
+        close = last.get("Close")
+        if any(v is None or (isinstance(v, float) and pd.isna(v))
+               for v in [ema20, ema50, close]):
+            return None
+        close, ema20, ema50 = float(close), float(ema20), float(ema50)
+        if close > ema20 > ema50:
+            return "bullish"
+        elif close < ema20 < ema50:
+            return "bearish"
+    except Exception:
+        pass
+    return None
+
+
 # ── Signal generation ─────────────────────────────────────────────
 
 def generate_trade_signal(
@@ -175,9 +336,29 @@ def generate_trade_signal(
         ml_score = predict_price_movement(df, symbol=symbol)
 
         # ── 3. Sentiment ─────────────────────────────────────────
-        sentiment_raw = analyze_sentiment(symbol=symbol)
+        # Skip live news fetching during backtests (wrong + slow per bar)
+        if CONFIG.get("backtest_mode", False):
+            sentiment_raw = None
+        else:
+            sentiment_raw = analyze_sentiment(symbol=symbol)
         # Rescale [-1, 1] → [0, 1] for blending (None if unavailable)
         sentiment_score = ((sentiment_raw + 1.0) / 2.0) if sentiment_raw is not None else None
+
+        # ── 3b. Government Contract Signal (STOCKS ONLY) ─────────
+        # Just one edge among many - adds conviction to existing signals
+        gov_contract_signal = None
+        gov_contract_boost = None
+        stock_watchlist = CONFIG.get("stock_watchlist", [])
+        if not CONFIG.get("backtest_mode", False):  # Skip in backtests
+            gov_contract_signal = _check_government_contract_signal(symbol, stock_watchlist)
+            if gov_contract_signal:
+                # Contract detected! Adds strong buy conviction
+                gov_contract_boost = 0.85  # High confidence but not overwhelming
+                logging.info(
+                    f"[Strategy] GOV CONTRACT for {symbol}: "
+                    f"{gov_contract_signal.get('reason', 'Unknown')} — "
+                    f"Adding buy signal boost"
+                )
 
         # ── 4. LLM TA interpretation (optional) ─────────────────
         llm_buy_boost = None
@@ -232,6 +413,15 @@ def generate_trade_signal(
             components_sell.append(1 - llm_buy_boost)
             weights.append(CONFIG["llm_weight"])
 
+        # Government Contract — Just another edge signal (treated equally)
+        if gov_contract_boost is not None:
+            components_buy.append(gov_contract_boost)
+            components_sell.append(1 - gov_contract_boost)
+            # Equal weight - contracts add conviction, don't override other signals
+            gov_weight = CONFIG.get("gov_contract_weight", 1.0)
+            weights.append(gov_weight)
+            logging.info(f"[Strategy] {symbol} — Gov contract signal included (adds conviction)")
+
         total_w = sum(weights)
         if total_w == 0:
             logging.warning(f"[Strategy] {symbol} — all components unavailable")
@@ -252,6 +442,9 @@ def generate_trade_signal(
         threshold = CONFIG["confidence_threshold"]
         entry_price = float(recent["Close"])
 
+        # ── Multi-timeframe filter ─────────────────────────────
+        daily_bias = _get_daily_bias(symbol, df)
+
         # ── Decide: buy, sell, or hold ───────────────────────────
         side = None
         confidence = 0.0
@@ -264,6 +457,39 @@ def generate_trade_signal(
 
         if side is None:
             logging.info(f"[Strategy] {symbol} — no signal (hold)")
+            return None
+
+        # Multi-TF confirmation: penalise signals against the daily trend
+        if daily_bias is not None:
+            if side == "buy" and daily_bias == "bearish":
+                mtf_penalty = CONFIG.get("mtf_counter_trend_penalty", 0.08)
+                confidence -= mtf_penalty
+                logging.info(
+                    f"[Strategy] {symbol} — BUY against daily bearish trend, "
+                    f"confidence penalised by {mtf_penalty:.2f} → {confidence:.3f}"
+                )
+            elif side == "sell" and daily_bias == "bullish":
+                mtf_penalty = CONFIG.get("mtf_counter_trend_penalty", 0.08)
+                confidence -= mtf_penalty
+                logging.info(
+                    f"[Strategy] {symbol} — SELL against daily bullish trend, "
+                    f"confidence penalised by {mtf_penalty:.2f} → {confidence:.3f}"
+                )
+            elif (side == "buy" and daily_bias == "bullish") or \
+                 (side == "sell" and daily_bias == "bearish"):
+                mtf_boost = CONFIG.get("mtf_aligned_boost", 0.03)
+                confidence += mtf_boost
+                logging.info(
+                    f"[Strategy] {symbol} — signal aligned with daily {daily_bias} trend, "
+                    f"confidence boosted by {mtf_boost:.2f} → {confidence:.3f}"
+                )
+
+        # Re-check threshold after MTF adjustment
+        if confidence < threshold:
+            logging.info(
+                f"[Strategy] {symbol} — signal below threshold after MTF adjustment "
+                f"({confidence:.3f} < {threshold})"
+            )
             return None
 
         asset_type = "crypto" if is_crypto(symbol) else "stock"

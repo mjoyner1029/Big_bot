@@ -19,3 +19,6 @@ streamlit
 plotly
 websocket-client
 feedparser
+psutil>=5.9.0
+pytz  # Required for market hours timezone handling
+twilio  # SMS alerts via Twilio
