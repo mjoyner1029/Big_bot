@@ -54,7 +54,7 @@ def _table(query: str, params=()) -> pd.DataFrame:
         conn.close()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=30)
 def get_positions():
     if not DB_PATH.exists():
         return pd.DataFrame(columns=[
@@ -86,7 +86,7 @@ def get_positions():
         conn.close()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=30)
 def get_trade_history(limit: int = 500):
     if not DB_PATH.exists():
         return pd.DataFrame(columns=[
@@ -134,7 +134,7 @@ def get_trade_history(limit: int = 500):
         conn.close()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=30)
 def get_summary():
     positions = get_positions()
     trades = get_trade_history(limit=1000)

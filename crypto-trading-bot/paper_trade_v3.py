@@ -37,7 +37,7 @@ def main():
     logger.info("="*70)
     
     # Initialize bot
-    bot = LLMTradingBot(capital=6090)
+    bot = LLMTradingBot(capital=float(os.getenv("TRADING_CAPITAL", "2000")))
     
     # Override execute_trade to NOT actually trade
     original_execute = bot.execute_trade
