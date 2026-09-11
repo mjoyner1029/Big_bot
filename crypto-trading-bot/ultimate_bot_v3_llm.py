@@ -2306,7 +2306,7 @@ class LLMTradingBot:
         logger.info(f"   Open positions: {open_count}/{self.safety.max_positions}")
         logger.info(f"   Daily P&L: ${metrics['daily_pnl']:+.2f}")
         logger.info(f"   Consecutive losses: {metrics['consecutive_losses']}")
-        if metrics['circuit_breaker_triggered']:
+        if metrics.get('circuit_breaker'):
             logger.critical(f"   🛑 CIRCUIT BREAKER ACTIVE!")
         logger.info(f"{'='*60}")
         
