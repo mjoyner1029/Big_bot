@@ -189,6 +189,98 @@ def build_earnings_series(trades: pd.DataFrame, range_key: str) -> pd.DataFrame:
     return pd.DataFrame({"period": df["entry_time"], "earnings": df["pnl"].cumsum()})
 
 
+MARKET_RANGES = {
+    "1D": ("1d", "5m", 300),
+    "5D": ("5d", "15m", 3600),
+    "1M": ("1mo", "1h", 21600),
+    "6M": ("6mo", "1d", 86400),
+    "1Y": ("1y", "1d", 86400),
+}
+
+
+def _coinbase_candles(symbol: str, granularity: int) -> pd.DataFrame:
+    import requests
+    resp = requests.get(
+        f"https://api.exchange.coinbase.com/products/{symbol}/candles",
+        params={"granularity": granularity}, timeout=10)
+    resp.raise_for_status()
+    rows = resp.json()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["time", "low", "high", "open", "close", "volume"])
+    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    return df.sort_values("time").reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def get_ohlcv(symbol: str, period: str, interval: str, granularity: int) -> pd.DataFrame:
+    if symbol.endswith("-USD"):
+        try:
+            df = _coinbase_candles(symbol, granularity)
+            if not df.empty:
+                return df
+        except Exception:
+            pass
+    try:
+        import yfinance as yf
+        df = yf.download(symbol, period=period, interval=interval,
+                         progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df.reset_index().rename(columns=str.lower).rename(
+            columns={"datetime": "time", "date": "time"})
+    except Exception:
+        return pd.DataFrame()
+
+
+def _chart_layout(fig: go.Figure, height: int = 320) -> go.Figure:
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=10, b=10), height=height,
+        font=dict(color="#e7edf7"), showlegend=False,
+        xaxis=dict(showgrid=False, linecolor="rgba(148,163,184,0.2)",
+                   tickfont=dict(color="#9aa8bd", size=11), rangeslider=dict(visible=False)),
+        yaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.12)",
+                   linecolor="rgba(148,163,184,0.2)", tickfont=dict(color="#9aa8bd", size=11)),
+    )
+    return fig
+
+
+def render_market_charts(trades: pd.DataFrame) -> None:
+    st.markdown("<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Market chart</div><div class='mini-chip'>coinbase / yfinance · 5 min cache</div></div></div></div>", unsafe_allow_html=True)
+    symbols = sorted(trades["symbol"].dropna().unique().tolist()) if not trades.empty else []
+    if "BTC-USD" not in symbols:
+        symbols = ["BTC-USD"] + symbols
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        symbol = st.selectbox("Symbol", symbols, index=symbols.index("BTC-USD"), label_visibility="collapsed")
+    with c2:
+        rng = st.segmented_control("Market range", options=list(MARKET_RANGES),
+                                   default="1M", selection_mode="single",
+                                   label_visibility="collapsed")
+    period, interval, granularity = MARKET_RANGES.get(rng or "1M", MARKET_RANGES["1M"])
+    ohlcv = get_ohlcv(symbol, period, interval, granularity)
+    if ohlcv.empty:
+        st.info(f"No market data available for {symbol} right now.")
+        return
+    line_tab, candle_tab = st.tabs(["Line", "Candles"])
+    with line_tab:
+        fig = go.Figure(go.Scatter(
+            x=ohlcv["time"], y=ohlcv["close"], mode="lines",
+            line=dict(color="#7de7ff", width=2),
+            fill="tozeroy", fillcolor="rgba(125,231,255,0.06)"))
+        st.plotly_chart(_chart_layout(fig), width="stretch")
+    with candle_tab:
+        fig = go.Figure(go.Candlestick(
+            x=ohlcv["time"], open=ohlcv["open"], high=ohlcv["high"],
+            low=ohlcv["low"], close=ohlcv["close"],
+            increasing_line_color="#69e7af", increasing_fillcolor="rgba(105,231,175,0.75)",
+            decreasing_line_color="#ff8e9d", decreasing_fillcolor="rgba(255,142,157,0.75)"))
+        st.plotly_chart(_chart_layout(fig, height=380), width="stretch")
+
+
 def _sidebar_icon(path_svg: str):
     return f"<svg viewBox='0 0 24 24' aria-hidden='true'>{path_svg}</svg>"
 
@@ -327,6 +419,10 @@ def render_overview():
             symbol_df["win rate"] = (symbol_df["wins"] / symbol_df["trades"] * 100).map(lambda x: f"{x:.1f}%")
             symbol_df["pnl"] = symbol_df["pnl"].map(lambda x: f"${x:.2f}")
             st.dataframe(symbol_df[["symbol", "trades", "win rate", "pnl"]], hide_index=True, width="stretch")
+
+    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+
+    render_market_charts(trade_history)
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
