@@ -189,53 +189,26 @@ def build_earnings_series(trades: pd.DataFrame, range_key: str) -> pd.DataFrame:
     return pd.DataFrame({"period": df["entry_time"], "earnings": df["pnl"].cumsum()})
 
 
-MARKET_RANGES = {
-    "1D": ("1d", "5m", 300),
-    "5D": ("5d", "15m", 3600),
-    "1M": ("1mo", "1h", 21600),
-    "6M": ("6mo", "1d", 86400),
-    "1Y": ("1y", "1d", 86400),
-}
+BAR_FREQS = {"1H": "5min", "1D": "1h", "1M": "D", "6M": "W", "1Y": "W"}
 
 
-def _coinbase_candles(symbol: str, granularity: int) -> pd.DataFrame:
-    import requests
-    resp = requests.get(
-        f"https://api.exchange.coinbase.com/products/{symbol}/candles",
-        params={"granularity": granularity}, timeout=10)
-    resp.raise_for_status()
-    rows = resp.json()
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows, columns=["time", "low", "high", "open", "close", "volume"])
-    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-    return df.sort_values("time").reset_index(drop=True)
+def build_earnings_bars(trades: pd.DataFrame, range_key: str) -> pd.DataFrame:
+    if trades.empty:
+        return pd.DataFrame(columns=["period", "pnl"])
+    df = trades.dropna(subset=["entry_time"]).sort_values("entry_time")
+    if df.empty:
+        return pd.DataFrame(columns=["period", "pnl"])
+    window = RANGE_WINDOWS.get(range_key)
+    if window is not None:
+        df = df[df["entry_time"] >= df["entry_time"].max() - window]
+    if df.empty:
+        return pd.DataFrame(columns=["period", "pnl"])
+    freq = BAR_FREQS.get(range_key, "W")
+    grouped = df.groupby(df["entry_time"].dt.to_period(freq))["pnl"].sum()
+    return pd.DataFrame({"period": grouped.index.to_timestamp(), "pnl": grouped.values})
 
 
-@st.cache_data(show_spinner=False, ttl=300)
-def get_ohlcv(symbol: str, period: str, interval: str, granularity: int) -> pd.DataFrame:
-    if symbol.endswith("-USD"):
-        try:
-            df = _coinbase_candles(symbol, granularity)
-            if not df.empty:
-                return df
-        except Exception:
-            pass
-    try:
-        import yfinance as yf
-        df = yf.download(symbol, period=period, interval=interval,
-                         progress=False, auto_adjust=True)
-        if df is None or df.empty:
-            return pd.DataFrame()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        return df.reset_index().rename(columns=str.lower).rename(
-            columns={"datetime": "time", "date": "time"})
-    except Exception:
-        return pd.DataFrame()
-
-
-def _chart_layout(fig: go.Figure, height: int = 320) -> go.Figure:
+def _chart_layout(fig: go.Figure, height: int = 280) -> go.Figure:
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=10, r=10, t=10, b=10), height=height,
@@ -246,39 +219,6 @@ def _chart_layout(fig: go.Figure, height: int = 320) -> go.Figure:
                    linecolor="rgba(148,163,184,0.2)", tickfont=dict(color="#9aa8bd", size=11)),
     )
     return fig
-
-
-def render_market_charts(trades: pd.DataFrame) -> None:
-    st.markdown("<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Market chart</div><div class='mini-chip'>coinbase / yfinance · 5 min cache</div></div></div></div>", unsafe_allow_html=True)
-    symbols = sorted(trades["symbol"].dropna().unique().tolist()) if not trades.empty else []
-    if "BTC-USD" not in symbols:
-        symbols = ["BTC-USD"] + symbols
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        symbol = st.selectbox("Symbol", symbols, index=symbols.index("BTC-USD"), label_visibility="collapsed")
-    with c2:
-        rng = st.segmented_control("Market range", options=list(MARKET_RANGES),
-                                   default="1M", selection_mode="single",
-                                   label_visibility="collapsed")
-    period, interval, granularity = MARKET_RANGES.get(rng or "1M", MARKET_RANGES["1M"])
-    ohlcv = get_ohlcv(symbol, period, interval, granularity)
-    if ohlcv.empty:
-        st.info(f"No market data available for {symbol} right now.")
-        return
-    line_tab, candle_tab = st.tabs(["Line", "Candles"])
-    with line_tab:
-        fig = go.Figure(go.Scatter(
-            x=ohlcv["time"], y=ohlcv["close"], mode="lines",
-            line=dict(color="#7de7ff", width=2),
-            fill="tozeroy", fillcolor="rgba(125,231,255,0.06)"))
-        st.plotly_chart(_chart_layout(fig), width="stretch")
-    with candle_tab:
-        fig = go.Figure(go.Candlestick(
-            x=ohlcv["time"], open=ohlcv["open"], high=ohlcv["high"],
-            low=ohlcv["low"], close=ohlcv["close"],
-            increasing_line_color="#69e7af", increasing_fillcolor="rgba(105,231,175,0.75)",
-            decreasing_line_color="#ff8e9d", decreasing_fillcolor="rgba(255,142,157,0.75)"))
-        st.plotly_chart(_chart_layout(fig, height=380), width="stretch")
 
 
 def _sidebar_icon(path_svg: str):
@@ -361,26 +301,26 @@ def render_overview():
         label_visibility="collapsed",
     )
     earnings_df = build_earnings_series(trade_history, range_mode)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=earnings_df["period"], y=earnings_df["earnings"], mode="lines", line=dict(color="#74f3b4", width=3), fill="tozeroy", fillcolor="rgba(116,243,180,0.1)"))
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10,r=10,t=10,b=10),
-        height=280,
-        xaxis=dict(showgrid=False, linecolor="rgba(148,163,184,0.2)", tickfont=dict(color="#9aa8bd", size=11)),
-        yaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.12)", linecolor="rgba(148,163,184,0.2)", tickfont=dict(color="#9aa8bd", size=11)),
-        font=dict(color="#e7edf7"),
-        showlegend=False,
-    )
+    bars_df = build_earnings_bars(trade_history, range_mode)
 
     left, right = st.columns([1.4, 0.9])
     with left:
-        st.markdown(f"<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Cumulative P&L</div><div class='mini-chip'>{(range_mode or 'ALLTIME').lower()}</div></div></div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Portfolio earnings</div><div class='mini-chip'>{(range_mode or 'ALLTIME').lower()}</div></div></div></div>", unsafe_allow_html=True)
         if earnings_df.empty:
             st.write("No trades in this range.")
         else:
-            st.plotly_chart(fig, width="stretch")
+            line_tab, bar_tab = st.tabs(["Line", "Bars"])
+            with line_tab:
+                fig = go.Figure(go.Scatter(
+                    x=earnings_df["period"], y=earnings_df["earnings"], mode="lines",
+                    line=dict(color="#74f3b4", width=3),
+                    fill="tozeroy", fillcolor="rgba(116,243,180,0.1)"))
+                st.plotly_chart(_chart_layout(fig), width="stretch")
+            with bar_tab:
+                fig = go.Figure(go.Bar(
+                    x=bars_df["period"], y=bars_df["pnl"],
+                    marker_color=["#69e7af" if v >= 0 else "#ff8e9d" for v in bars_df["pnl"]]))
+                st.plotly_chart(_chart_layout(fig), width="stretch")
     with right:
         st.markdown("<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Win rate</div><div class='mini-chip'>closed trades</div></div></div></div>", unsafe_allow_html=True)
         win_rate_pct = summary["win_rate"] * 100
@@ -419,10 +359,6 @@ def render_overview():
             symbol_df["win rate"] = (symbol_df["wins"] / symbol_df["trades"] * 100).map(lambda x: f"{x:.1f}%")
             symbol_df["pnl"] = symbol_df["pnl"].map(lambda x: f"${x:.2f}")
             st.dataframe(symbol_df[["symbol", "trades", "win rate", "pnl"]], hide_index=True, width="stretch")
-
-    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
-
-    render_market_charts(trade_history)
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
