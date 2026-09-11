@@ -7,7 +7,7 @@ Checks all Python dependencies, versions, and compatibility.
 import sys
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
@@ -137,10 +137,9 @@ class DependencyChecker:
         
         if name_lower in core_packages or name in core_packages:
             return "core"
-        elif name_lower in optional_packages or name in optional_packages:
+        if name_lower in optional_packages or name in optional_packages:
             return "optional"
-        else:
-            return "dev"
+        return "dev"
 
     def _check_each_dependency(self):
         """Check each dependency's installation status"""
@@ -164,7 +163,7 @@ class DependencyChecker:
                 else:
                     dep.status = DependencyStatus.MISSING
                     
-            except Exception as e:
+            except Exception:
                 dep.status = DependencyStatus.MISSING
 
     def get_summary(self) -> str:
@@ -178,7 +177,7 @@ class DependencyChecker:
         # Group by category
         core_deps = [d for d in self.dependencies if d.category == "core"]
         optional_deps = [d for d in self.dependencies if d.category == "optional"]
-        dev_deps = [d for d in self.dependencies if d.category == "dev"]
+        [d for d in self.dependencies if d.category == "dev"]
         
         # Core dependencies
         lines.append("CORE DEPENDENCIES (required):")
@@ -257,7 +256,7 @@ class DependencyChecker:
         packages = [d.name for d in missing]
         
         try:
-            result = subprocess.run(
+            subprocess.run(
                 [sys.executable, "-m", "pip", "install"] + packages,
                 check=True,
                 text=True,
@@ -290,10 +289,9 @@ def check_python_version() -> bool:
         print("  Please upgrade to Python 3.8 or higher")
         print("=" * 70)
         return False
-    else:
-        print("OK: Python version compatible")
-        print("=" * 70)
-        return True
+    print("OK: Python version compatible")
+    print("=" * 70)
+    return True
 
 
 def main():

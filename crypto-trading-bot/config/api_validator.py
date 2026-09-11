@@ -3,11 +3,40 @@ API Key Validator
 Real-time validation of API keys by making test calls to each service.
 """
 
-import os
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
+from types import SimpleNamespace
+
+
+class _MissingDependencyClient:
+    def __init__(self, *args, **kwargs):
+        raise ImportError("optional dependency is not installed")
+
+
+def _missing_request(*args, **kwargs):
+    raise ImportError("optional dependency is not installed")
+
+try:
+    import anthropic
+except Exception:  # noqa: BLE001
+    anthropic = SimpleNamespace(Anthropic=_MissingDependencyClient)
+
+try:
+    import ccxt
+except Exception:  # noqa: BLE001
+    ccxt = SimpleNamespace(coinbase=_MissingDependencyClient)
+
+try:
+    import alpaca_trade_api as tradeapi
+except Exception:  # noqa: BLE001
+    tradeapi = SimpleNamespace(REST=_MissingDependencyClient)
+
+try:
+    import requests
+except Exception:  # noqa: BLE001
+    requests = SimpleNamespace(get=_missing_request)
 
 
 class APIStatus(Enum):
@@ -77,13 +106,14 @@ class APIKeyValidator:
             )
         
         try:
-            import anthropic
-            
+            if anthropic is None:
+                raise ImportError("anthropic")
+
             start = time.time()
             client = anthropic.Anthropic(api_key=api_key)
             
             # Make minimal test call
-            response = client.messages.create(
+            client.messages.create(
                 model="claude-3-5-sonnet-latest",
                 max_tokens=10,
                 messages=[{"role": "user", "content": "Hi"}]
@@ -116,20 +146,19 @@ class APIKeyValidator:
                     message="Invalid API key",
                     details="Check your key at console.anthropic.com"
                 )
-            elif "rate" in error_msg or "429" in error_msg:
+            if "rate" in error_msg or "429" in error_msg:
                 return APIValidationResult(
                     service="Anthropic Claude",
                     status=APIStatus.RATE_LIMITED,
                     message="Rate limited",
                     details="Wait a moment and try again"
                 )
-            else:
-                return APIValidationResult(
-                    service="Anthropic Claude",
-                    status=APIStatus.SERVICE_ERROR,
-                    message="API error",
-                    details=str(e)[:100]
-                )
+            return APIValidationResult(
+                service="Anthropic Claude",
+                status=APIStatus.SERVICE_ERROR,
+                message="API error",
+                details=str(e)[:100]
+            )
 
     def _validate_coinbase(self) -> APIValidationResult:
         """Validate Coinbase API credentials"""
@@ -145,8 +174,9 @@ class APIKeyValidator:
             )
         
         try:
-            import ccxt
-            
+            if ccxt is None:
+                raise ImportError("ccxt")
+
             start = time.time()
             exchange = ccxt.coinbase({
                 'apiKey': api_key,
@@ -168,14 +198,13 @@ class APIKeyValidator:
                     details=f"Account active, {total_assets} assets with balance",
                     latency_ms=latency
                 )
-            else:
-                return APIValidationResult(
-                    service="Coinbase",
-                    status=APIStatus.VALID,
-                    message="API credentials valid",
-                    details="Account connected successfully",
-                    latency_ms=latency
-                )
+            return APIValidationResult(
+                service="Coinbase",
+                status=APIStatus.VALID,
+                message="API credentials valid",
+                details="Account connected successfully",
+                latency_ms=latency
+            )
                 
         except ImportError:
             return APIValidationResult(
@@ -194,27 +223,26 @@ class APIKeyValidator:
                     message="Invalid API credentials",
                     details="Verify your API key and secret at coinbase.com"
                 )
-            elif "permission" in error_msg or "403" in error_msg:
+            if "permission" in error_msg or "403" in error_msg:
                 return APIValidationResult(
                     service="Coinbase",
                     status=APIStatus.INVALID,
                     message="Insufficient permissions",
                     details="Enable trading permissions for your API key"
                 )
-            elif "rate" in error_msg or "429" in error_msg:
+            if "rate" in error_msg or "429" in error_msg:
                 return APIValidationResult(
                     service="Coinbase",
                     status=APIStatus.RATE_LIMITED,
                     message="Rate limited",
                     details="Too many requests, wait a moment"
                 )
-            else:
-                return APIValidationResult(
-                    service="Coinbase",
-                    status=APIStatus.SERVICE_ERROR,
-                    message="API error",
-                    details=str(e)[:100]
-                )
+            return APIValidationResult(
+                service="Coinbase",
+                status=APIStatus.SERVICE_ERROR,
+                message="API error",
+                details=str(e)[:100]
+            )
 
     def _validate_alpaca(self) -> APIValidationResult:
         """Validate Alpaca API credentials"""
@@ -231,8 +259,9 @@ class APIKeyValidator:
             )
         
         try:
-            import alpaca_trade_api as tradeapi
-            
+            if tradeapi is None:
+                raise ImportError("alpaca_trade_api")
+
             start = time.time()
             api = tradeapi.REST(
                 key_id=api_key,
@@ -272,27 +301,26 @@ class APIKeyValidator:
                     message="Invalid API credentials",
                     details="Check your keys at alpaca.markets"
                 )
-            elif "forbidden" in error_msg or "403" in error_msg:
+            if "forbidden" in error_msg or "403" in error_msg:
                 return APIValidationResult(
                     service="Alpaca",
                     status=APIStatus.INVALID,
                     message="Access forbidden",
                     details="Verify API key permissions and account status"
                 )
-            elif "rate" in error_msg or "429" in error_msg:
+            if "rate" in error_msg or "429" in error_msg:
                 return APIValidationResult(
                     service="Alpaca",
                     status=APIStatus.RATE_LIMITED,
                     message="Rate limited",
                     details="Too many requests, wait a moment"
                 )
-            else:
-                return APIValidationResult(
-                    service="Alpaca",
-                    status=APIStatus.SERVICE_ERROR,
-                    message="API error",
-                    details=str(e)[:100]
-                )
+            return APIValidationResult(
+                service="Alpaca",
+                status=APIStatus.SERVICE_ERROR,
+                message="API error",
+                details=str(e)[:100]
+            )
 
     def _validate_news_api(self) -> APIValidationResult:
         """Validate News API key"""
@@ -307,8 +335,9 @@ class APIKeyValidator:
             )
         
         try:
-            import requests
-            
+            if requests is None:
+                raise ImportError("requests")
+
             start = time.time()
             
             # Test call to News API

@@ -30,7 +30,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional
+from typing import Optional
 
 import pandas as pd
 
@@ -40,11 +40,9 @@ _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from config.config import CONFIG, get_all_symbols, is_crypto
-from data.fetcher import fetch_latest_market_data
+from config.config import CONFIG, get_all_symbols
 from models.price_predictor import train_model as train_xgb
 from models.reinforce_trainer import train_reinforcement_model as train_rl
-from indicators.ta_indicators import add_ta_indicators
 
 # ── Logging ───────────────────────────────────────────────────────
 os.makedirs("logs", exist_ok=True)
@@ -190,6 +188,9 @@ def main() -> None:
             results.append(r)
             status = "OK" if r["xgb_ok"] and r["rl_ok"] else f"PARTIAL ({r['error']})"
             logging.info(f"[Pretrain] {sym}: {r['rows']} rows — {status}")
+            # Rate-limit guard: avoid hammering yfinance between symbols
+            if i < len(symbols):
+                time.sleep(2.0)
 
     elapsed = time.time() - start_time
 

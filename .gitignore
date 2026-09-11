@@ -1,0 +1,6 @@
+.DS_Store
+# Third-party clone with its own .git — see crypto-trading-bot/README for setup
+Kronos/
+# SQLite transient journal files
+*.sqlite-shm
+*.sqlite-wal

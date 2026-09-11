@@ -6,7 +6,7 @@ Tests API key validators with mocked responses.
 import unittest
 import sys
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent: com.bigbot.paper-training
+  Keeps the paper trading bot running at all times (including after login).
+
+  Install:
+    cp deploy/com.bigbot.paper-training.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.bigbot.paper-training.plist
+
+  Check status:
+    launchctl list | grep bigbot
+
+  Stop temporarily:
+    launchctl unload ~/Library/LaunchAgents/com.bigbot.paper-training.plist
+
+  View logs:
+    tail -f /Users/mmj13/Code/Big_bot/crypto-trading-bot/logs/paper_training_console.log
+-->
+<plist version="1.0">
+<dict>
+  <!-- Unique identifier -->
+  <key>Label</key>
+  <string>com.bigbot.paper-training</string>
+
+  <!-- Command: the auto-restart wrapper script -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot/scripts/paper_training_loop.sh</string>
+    <string>--capital</string>
+    <string>10000</string>
+  </array>
+
+  <!-- Working directory -->
+  <key>WorkingDirectory</key>
+  <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot</string>
+
+  <!-- Start immediately when loaded -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- macOS restart-on-exit (launchd will also restart if script exits) -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Stdout/Stderr to the same console log -->
+  <key>StandardOutPath</key>
+  <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot/logs/launchd_stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot/logs/launchd_stderr.log</string>
+
+  <!-- Only run when the user is logged in (not a system daemon) -->
+  <key>SessionCreate</key>
+  <false/>
+
+  <!-- Throttle restarts — wait 30s before relaunching after crash -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <!-- Inherit user environment (PATH, HOME, etc.) -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/mmj13</string>
+    <key>PATH</key>
+    <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>ENABLE_ALT_DATA_INTEL</key>
+    <string>true</string>
+    <key>ENABLE_CATALYST_SWING</key>
+    <string>true</string>
+    <key>ENABLE_OPTIONS_TRADING</key>
+    <string>true</string>
+    <key>TRADING_MODE</key>
+    <string>balanced</string>
+  </dict>
+</dict>
+</plist>

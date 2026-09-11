@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.config import CONFIG
-from trading.profit_pile import get_pile_status, format_profit_summary
+from trading.profit_pile import format_profit_summary
 import json
 import os
 
@@ -28,7 +28,7 @@ def check_api_keys():
     print(f"Coinbase API Key:     {key_status('coinbase_api_key')}")
     print(f"Coinbase Secret:      {key_status('coinbase_api_secret')}")
     print(f"Alpaca API Key:       {key_status('alpaca_api_key')}")
-    print(f"Alpaca Secret:        {key_status('alpaca_secret_key')}")
+    print(f"Alpaca Secret:        {key_status('alpaca_api_secret')}")
     
     anthro_key = os.getenv('ANTHROPIC_API_KEY')
     if anthro_key:

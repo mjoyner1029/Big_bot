@@ -7,7 +7,6 @@ Checks dependencies, configuration, APIs, and system resources.
 import sys
 import os
 import platform
-import subprocess
 from typing import Dict, List, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -178,7 +177,6 @@ class SystemHealthChecker:
         ]
         
         missing = []
-        outdated = []
         
         for package, description in required:
             # Check if package is installed
@@ -336,7 +334,7 @@ class SystemHealthChecker:
                 message="Internet connection active",
                 details="DNS resolution working"
             ))
-        except Exception as e:
+        except Exception:
             self.checks.append(HealthCheck(
                 component="Internet",
                 status=HealthStatus.CRITICAL,
@@ -442,10 +440,9 @@ class SystemHealthChecker:
         
         if critical > 0:
             return f"CRITICAL: {critical} issues"
-        elif warning > 0:
+        if warning > 0:
             return f"WARNING: {warning} issues"
-        else:
-            return f"HEALTHY: {healthy}/{len(self.checks)} checks passed"
+        return f"HEALTHY: {healthy}/{len(self.checks)} checks passed"
 
 
 def check_system_health(config: Dict, verbose: bool = True) -> bool:

@@ -4,6 +4,8 @@
 
 # Python
 __pycache__/
+.pytest_cache/
+.venv/
 *.py[cod]
 *.egg-info/
 dist/
@@ -17,6 +19,12 @@ models/saved/*.pkl
 logs/bot.log
 logs/bot_state.json
 logs/trade_log.csv
+logs/*.log
+logs/*.csv
+logs/*.json
+state/*.json
+state/*.csv
+state/*.log
 
 # Data caches
 data/historical/*.csv
@@ -34,3 +42,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Archives / release artifacts
+*.zip

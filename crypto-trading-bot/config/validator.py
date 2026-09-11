@@ -4,8 +4,6 @@ Comprehensive validation framework for all bot configuration settings.
 Validates types, ranges, dependencies, and API keys.
 """
 
-import os
-import re
 from typing import Any, Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum

@@ -4,7 +4,6 @@ Interactive Setup Wizard
 Guided configuration for the LIMITLESS trading bot.
 """
 
-import os
 import sys
 from pathlib import Path
 from typing import Dict, Optional
@@ -245,7 +244,7 @@ class SetupWizard:
             
             api_key = self._ask_string("Coinbase API Key", secret=True)
             api_secret = self._ask_string("Coinbase API Secret", secret=True)
-            passphrase = self._ask_string("Coinbase Passphrase", secret=True)
+            passphrase = self._ask_string("Coinbase Passphrase (optional; legacy Coinbase Exchange only)", secret=True)
             
             if api_key:
                 self.env_vars['COINBASE_API_KEY'] = api_key
@@ -307,10 +306,9 @@ class SetupWizard:
         print(f"\n{Colors.BOLD}Writing configuration...{Colors.ENDC}")
         
         # Read existing .env template if it exists
-        template_lines = []
         if self.env_path.exists():
             with open(self.env_path, 'r') as f:
-                template_lines = f.readlines()
+                f.readlines()
         
         # Build new .env content
         lines = []
@@ -326,6 +324,7 @@ class SetupWizard:
         lines.append("# ── Crypto Exchange (Coinbase / any ccxt-supported) ──────────\n")
         lines.append(f"COINBASE_API_KEY={self.env_vars.get('COINBASE_API_KEY', '')}\n")
         lines.append(f"COINBASE_API_SECRET={self.env_vars.get('COINBASE_API_SECRET', '')}\n")
+        lines.append(f"# Optional: legacy Coinbase Exchange / Pro only\n")
         lines.append(f"COINBASE_PASSPHRASE={self.env_vars.get('COINBASE_PASSPHRASE', '')}\n\n")
         
         # Stock Broker

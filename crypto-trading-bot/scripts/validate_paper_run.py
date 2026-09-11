@@ -15,6 +15,7 @@ Usage:
 """
 import argparse
 import csv
+import logging
 import os
 import re
 import sys
@@ -118,6 +119,7 @@ def compute_metrics(trades: List[Dict], starting_capital: float) -> Dict:
 def count_circuit_breaker_events(log_path: str) -> int:
     """Count CIRCUIT BREAKER and KILL SWITCH events from bot.log."""
     if not os.path.exists(log_path):
+        logging.warning(f"[Validation] Circuit breaker log not found: {log_path}")
         return 0
 
     count = 0
@@ -127,8 +129,8 @@ def count_circuit_breaker_events(log_path: str) -> int:
             for line in f:
                 if pattern.search(line):
                     count += 1
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error(f"[Validation] Failed to read circuit breaker log: {e}")
     return count
 
 

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bigbot.daily-checkpoint</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot/scripts/daily_checkpoint_runner.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>18</integer>
+    <key>Minute</key>
+    <integer>5</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot/logs/daily_checkpoint_stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot/logs/daily_checkpoint_stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/mmj13</string>
+    <key>PATH</key>
+    <string>/Users/mmj13/Code/Big_bot/crypto-trading-bot/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

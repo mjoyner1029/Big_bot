@@ -1,0 +1,67 @@
+# 90-Day Paper Trading Validation Campaign Configuration
+# =========================================================
+# FREEZE THIS CONFIG FOR THE ENTIRE 90-DAY CAMPAIGN.
+# NO strategy changes, NO parameter tuning, NO model retraining
+# during the validation period. New experiments run as CHALLENGERS only.
+#
+# Start:  python -m validation.cli campaign90 --config configs/validation_90day.yaml
+# Status: python -m validation.cli status
+# Report: python -m validation.cli report "90d-Validation" --days 90
+
+campaign:
+  name: "90d-Validation"
+  duration_days: 90
+  trading_mode: PAPER
+  starting_capital: 10000.00
+  objective: >
+    PROVE that the system generates positive expectancy, controls risk,
+    and executes reliably. Stop optimizing for feature count.
+    Optimize for EVIDENCE.
+
+  # Promotion thresholds (must achieve ALL by day 90)
+  promotion_gates:
+    min_trades: 30
+    min_expectancy: 0.0           # must be positive
+    min_profit_factor: 1.10       # PF > 1.1
+    max_drawdown_pct: 0.20        # max 20% drawdown
+    min_sharpe: 0.30              # Sharpe > 0.3
+    min_win_rate: 0.35            # win rate > 35%
+
+risk:
+  max_position_pct: 0.05          # max 5% of capital per position
+  max_portfolio_risk_pct: 0.20    # max 20% at risk simultaneously
+  max_daily_loss_pct: 0.03        # stop trading if -3% in a day
+  max_weekly_loss_pct: 0.07       # stop trading if -7% in a week
+  stop_loss_pct: 0.015            # 1.5% stop loss per trade
+  take_profit_pct: 0.030          # 3.0% take profit per trade
+  kelly_fraction: 0.25            # quarter-Kelly position sizing
+
+execution:
+  slippage_assumption_bps: 5      # assumed slippage in backtest
+  spread_assumption_bps: 3        # assumed spread
+  fee_pct: 0.001                  # 0.1% exchange fee
+
+benchmarks:
+  primary: BUY_HOLD_BTC           # must beat BTC buy-and-hold
+  secondary:
+    - CASH                        # must beat 4.5% cash
+    - SPY                         # must beat S&P 500
+  reporting_period_days: 30
+
+data_quality:
+  max_stale_bars: 5
+  max_gap_minutes: 15
+  max_price_jump_pct: 0.25
+  max_feature_nan_pct: 0.05
+
+governance:
+  freeze_model_versions: true     # no model retraining during campaign
+  freeze_strategy_versions: true  # no strategy changes during campaign
+  freeze_config: true             # this config is immutable once campaign starts
+  challenger_only_experiments: true
+
+reporting:
+  daily_scorecard: true
+  weekly_report: true
+  final_report: true
+  save_to_db: true

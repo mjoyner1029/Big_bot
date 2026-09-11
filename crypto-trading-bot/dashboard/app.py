@@ -1,706 +1,407 @@
-"""
-Multi-asset Trading Bot — Streamlit Dashboard
-
-Launch:
-    cd crypto-trading-bot
-    streamlit run dashboard/app.py
-"""
-import sys, os
-
-# Ensure the project root is importable
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-import json
-import time
-import logging
-from datetime import datetime, timezone
-from typing import Dict
+import sqlite3
+from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
-from config.config import CONFIG, get_all_symbols, is_crypto
-from config.symbols import CRYPTO_SYMBOLS, STOCK_SYMBOLS, get_all_available_symbols
-from data.fetcher import fetch_latest_market_data
-from indicators.ta_indicators import add_ta_indicators, get_latest_indicator_snapshot
-from strategies.strategy_engine import generate_trade_signal
-from strategies.thresholds import get_trade_thresholds
-from trading.portfolio_manager import PortfolioManager
-from trading.paper_trader import execute_paper_trade
-from logs.trade_logger import log_trade
+ROOT = Path(__file__).resolve().parent.parent
+DB_PATH = ROOT / "data" / "trade_memory.sqlite"
 
-from dashboard.components import (
-    build_candlestick,
-    build_indicator_panel,
-    build_equity_curve,
-    build_allocation_chart,
-    format_positions_df,
-    format_trades_df,
-)
-from dashboard.autonomous_components import (
-    load_autonomous_journal,
-    load_cost_tracker,
-    build_learning_metrics_card,
-    build_symbol_preferences_chart,
-    build_win_rate_by_confidence_chart,
-    build_recent_decisions_table,
-    build_velocity_gauges,
-    build_cost_efficiency_card,
-    build_cost_breakdown_chart,
-    filter_autonomous_logs,
-    load_recent_log_entries,
-    build_world_events_card,
-    build_learning_progress_chart,
-)
+st.set_page_config(page_title="liquidity13 Dashboard", page_icon="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b1220'/%3E%3Cpath d='M20 18h24v6H20zm0 11h24v6H20zm0 11h17v6H20z' fill='%23dfeaf8'/%3E%3C/svg%3E", layout="wide")
 
-# Page config
-st.set_page_config(
-    page_title="LIMITLESS - Autonomous AI Trading",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# ── Shared state init ─────────────────────────────────────────────
-if "portfolio" not in st.session_state:
-    st.session_state.portfolio = PortfolioManager()
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "market_cache" not in st.session_state:
-    st.session_state.market_cache = {}       # sym -> df
-if "cache_ts" not in st.session_state:
-    st.session_state.cache_ts = 0.0
-if "equity_history" not in st.session_state:
-    st.session_state.equity_history = []
+NAV_ITEMS = [
+    "Overview",
+    "My account",
+    "Active Stocks",
+    "Dividend Insights",
+    "Trading Stocks Chat",
+    "Hybrid Funds",
+    "Portfolio",
+    "Settings",
+    "History",
+    "News",
+    "Feedback",
+]
 
 
-def _get_portfolio() -> PortfolioManager:
-    return st.session_state.portfolio
+@st.cache_data(show_spinner=False)
+def get_positions():
+    if not DB_PATH.exists():
+        return pd.DataFrame(columns=[
+            "id", "symbol", "signal", "direction", "size", "entry_price", "entry_fill_price",
+            "exit_price", "status", "pnl", "net_pnl", "strategy", "asset_class",
+            "entry_time", "exit_time", "close_reason", "regime", "confidence",
+            "stop_loss", "take_profit", "max_price"
+        ])
+
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        query = """
+            SELECT
+                id, symbol, signal, direction, size, entry_price, entry_fill_price,
+                exit_price, status, pnl, net_pnl, strategy, asset_class,
+                entry_time, exit_time, close_reason, regime, confidence,
+                stop_loss, take_profit, max_price
+            FROM positions
+            ORDER BY entry_time DESC
+        """
+        df = pd.read_sql_query(query, conn)
+        if not df.empty:
+            df["status"] = df["status"].fillna("UNKNOWN")
+            df["pnl"] = pd.to_numeric(df["pnl"], errors="coerce").fillna(0.0)
+            df["net_pnl"] = pd.to_numeric(df["net_pnl"], errors="coerce").fillna(0.0)
+            df["size"] = pd.to_numeric(df["size"], errors="coerce").fillna(0.0)
+        return df
+    finally:
+        conn.close()
 
 
-def _current_prices() -> Dict[str, float]:
-    """Build a {symbol: latest_close} map from cached data."""
-    prices: Dict[str, float] = {}
-    for sym, df in st.session_state.market_cache.items():
-        if df is not None and not df.empty:
-            prices[sym] = float(df["Close"].iloc[-1])
-    return prices
+@st.cache_data(show_spinner=False)
+def get_trade_history(limit: int = 500):
+    if not DB_PATH.exists():
+        return pd.DataFrame(columns=[
+            "id", "symbol", "strategy", "asset_class", "entry_price", "exit_price",
+            "position_size_usd", "qty", "pnl", "pnl_pct", "win_loss", "hold_time_seconds",
+            "entry_time", "exit_time", "is_paper", "market_regime", "reason_for_entry", "reason_for_exit"
+        ])
+
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        query = """
+            SELECT
+                trade_id AS id,
+                symbol,
+                strategy_names AS strategy,
+                asset_class,
+                entry_price,
+                exit_price,
+                position_size_usd,
+                qty,
+                pnl,
+                pnl_pct,
+                win_loss,
+                hold_time_seconds,
+                timestamp_open AS entry_time,
+                timestamp_close AS exit_time,
+                is_paper,
+                market_regime,
+                reason_for_entry,
+                reason_for_exit
+            FROM trades
+            ORDER BY timestamp_open DESC
+            LIMIT ?
+        """
+        df = pd.read_sql_query(query, conn, params=(limit,))
+        if not df.empty:
+            df["pnl"] = pd.to_numeric(df["pnl"], errors="coerce").fillna(0.0)
+            df["pnl_pct"] = pd.to_numeric(df["pnl_pct"], errors="coerce").fillna(0.0)
+            df["position_size_usd"] = pd.to_numeric(df["position_size_usd"], errors="coerce").fillna(0.0)
+            df["is_paper"] = df["is_paper"].fillna(0).astype(int)
+            df["entry_time"] = pd.to_datetime(df["entry_time"], errors="coerce")
+            df["exit_time"] = pd.to_datetime(df["exit_time"], errors="coerce")
+        return df
+    finally:
+        conn.close()
 
 
-def _refresh_market_data(symbols=None, force=False):
-    """Fetch fresh OHLCV for all symbols (cached for 60 s)."""
-    now = time.time()
-    if not force and now - st.session_state.cache_ts < 60:
-        return
-    symbols = symbols or get_all_symbols()
-    with st.spinner("Fetching market data..."):
-        for sym in symbols:
-            df = fetch_latest_market_data(ticker=sym)
-            if df is not None and not df.empty:
-                st.session_state.market_cache[sym] = df
-    st.session_state.cache_ts = now
-
-    # Record equity snapshot
-    portfolio = _get_portfolio()
-    prices = _current_prices()
-    eq = portfolio.total_equity(prices)
-    st.session_state.equity_history.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "equity": eq,
-    })
-
-
-# Sidebar
-with st.sidebar:
-    st.title("LIMITLESS")
-    st.caption("Autonomous AI Trading with Superhuman Intelligence")
-    st.caption(f"Asset class: **{CONFIG['asset_class']}**")
-    st.caption(f"Paper mode: **{CONFIG['use_paper_trading']}**")
-    st.caption(f"LLM enabled: **{CONFIG.get('use_llm', False)}**")
-    st.divider()
-
-    if st.button("Refresh Data", use_container_width=True):
-        _refresh_market_data(force=True)
-        st.success("Data refreshed")
-
-    if st.button("Save Portfolio", use_container_width=True):
-        _get_portfolio().save_state()
-        st.success("State saved")
-
-    st.divider()
-    st.caption("Powered by Streamlit + Plotly")
+@st.cache_data(show_spinner=False)
+def get_summary():
+    positions = get_positions()
+    trades = get_trade_history(limit=1000)
+    closed_pnl = pd.to_numeric(trades["pnl"], errors="coerce").fillna(0.0) if not trades.empty else pd.Series(dtype=float)
+    paper_pnl = pd.to_numeric(trades.loc[trades["is_paper"] == 1, "pnl"], errors="coerce").fillna(0.0) if not trades.empty else pd.Series(dtype=float)
+    live_pnl = pd.to_numeric(trades.loc[trades["is_paper"] == 0, "pnl"], errors="coerce").fillna(0.0) if not trades.empty else pd.Series(dtype=float)
+    open_positions = positions[positions["status"].str.upper() == "OPEN"] if not positions.empty else pd.DataFrame()
+    total_open_exposure = float(open_positions["size"].sum()) if not open_positions.empty else 0.0
+    total_realized_pnl = float(closed_pnl.sum()) if not closed_pnl.empty else 0.0
+    if trades.empty and positions.empty:
+        return {
+            "total_trades": 0,
+            "win_rate": 0.0,
+            "realized_pnl": 0.0,
+            "paper_pnl": 0.0,
+            "live_pnl": 0.0,
+            "open_positions": 0,
+            "open_exposure": 0.0,
+        }
+    win_rate = float((closed_pnl > 0).mean()) if not closed_pnl.empty else 0.0
+    return {
+        "total_trades": int(len(trades)),
+        "win_rate": win_rate,
+        "realized_pnl": float(total_realized_pnl),
+        "paper_pnl": float(paper_pnl.sum()),
+        "live_pnl": float(live_pnl.sum()),
+        "open_positions": int(len(open_positions)),
+        "open_exposure": total_open_exposure,
+    }
 
 
-# Tab bar
-tab_dash, tab_charts, tab_trade, tab_autonomous, tab_chat, tab_logs = st.tabs(
-    ["Dashboard", "Charts", "Trade", "Autonomous AI", "Chat", "Logs"]
-)
-
-# Ensure we have data
-_refresh_market_data()
-
-# ══════════════════════════════════════════════════════════════════
-#  TAB 1 — Dashboard
-# ══════════════════════════════════════════════════════════════════
-with tab_dash:
-    portfolio = _get_portfolio()
-    prices = _current_prices()
-    summary = portfolio.summary(prices)
-
-    # KPI row
-    has_trades = summary["closed_trades"] > 0
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Equity", f"${summary['equity']:,.2f}" if summary['equity'] else "--")
-    c2.metric("Cash", f"${summary['cash']:,.2f}" if summary['cash'] else "--")
-    c3.metric("Open Positions", summary["open_positions"])
-    c4.metric("Realised P&L", f"${summary['total_realised_pnl']:,.2f}" if has_trades else "--")
-    c5.metric("Win Rate", f"{summary['win_rate']*100:.1f}%" if has_trades else "--")
-
-    # Equity curve + allocation donut side by side
-    col_eq, col_alloc = st.columns([2, 1])
-    with col_eq:
-        fig_eq = build_equity_curve(
-            st.session_state.equity_history,
-            starting_capital=CONFIG["capital"],
-        )
-        st.plotly_chart(fig_eq, use_container_width=True)
-    with col_alloc:
-        fig_alloc = build_allocation_chart(
-            portfolio.open_positions, portfolio.cash, prices,
-        )
-        st.plotly_chart(fig_alloc, use_container_width=True)
-
-    # Open positions
-    st.subheader("Open Positions")
-    pos_df = format_positions_df(portfolio.open_positions, prices)
-    if pos_df.empty:
-        st.info("No open positions")
-    else:
-        st.dataframe(pos_df, use_container_width=True, hide_index=True)
-
-    # Recent closed trades
-    st.subheader("Recent Trades")
-    trades_df = format_trades_df(portfolio.closed_trades)
-    if trades_df.empty:
-        st.info("No closed trades yet")
-    else:
-        st.dataframe(trades_df, use_container_width=True, hide_index=True)
+RANGE_WINDOWS = {
+    "1H": pd.Timedelta(hours=1),
+    "1D": pd.Timedelta(days=1),
+    "1M": pd.Timedelta(days=30),
+    "6M": pd.Timedelta(days=182),
+    "1Y": pd.Timedelta(days=365),
+}
 
 
-# ══════════════════════════════════════════════════════════════════
-#  TAB 2 — Charts
-# ══════════════════════════════════════════════════════════════════
-with tab_charts:
-    all_syms = get_all_available_symbols()
-    chart_col1, chart_col2 = st.columns([1, 3])
-
-    with chart_col1:
-        selected_sym = st.selectbox("Symbol", all_syms, key="chart_symbol")
-        chart_period = st.selectbox("Period", ["1mo", "3mo", "6mo", "1y"], index=1, key="chart_period")
-        chart_interval = st.selectbox("Interval", ["15m", "1h", "1d"], index=1, key="chart_interval")
-        show_ema = st.checkbox("EMAs", value=True)
-        show_bb = st.checkbox("Bollinger Bands", value=True)
-        show_vol = st.checkbox("Volume", value=True)
-        show_indicators = st.checkbox("Indicator Panel", value=True)
-
-        if st.button("Load Chart", use_container_width=True):
-            st.session_state._chart_reload = True
-
-    with chart_col2:
-        # Fetch data for selected symbol
-        df_chart = fetch_latest_market_data(
-            ticker=selected_sym, period=chart_period, interval=chart_interval,
-        )
-        if df_chart is not None and not df_chart.empty:
-            df_ind = add_ta_indicators(df_chart)
-
-            fig_candle = build_candlestick(
-                df_ind, selected_sym,
-                show_ema=show_ema, show_bb=show_bb, show_volume=show_vol,
-            )
-            st.plotly_chart(fig_candle, use_container_width=True)
-
-            if show_indicators:
-                fig_ind = build_indicator_panel(df_ind)
-                st.plotly_chart(fig_ind, use_container_width=True)
-
-            # Latest indicator snapshot
-            with st.expander("Latest Indicator Values"):
-                snap = get_latest_indicator_snapshot(df_chart)
-                snap_clean = {k: round(v, 4) if isinstance(v, float) else v
-                              for k, v in snap.items()}
-                st.json(snap_clean)
-        else:
-            st.warning(f"Could not fetch data for {selected_sym}")
+def build_earnings_series(trades: pd.DataFrame, range_key: str) -> pd.DataFrame:
+    if trades.empty:
+        return pd.DataFrame(columns=["period", "earnings"])
+    df = trades.dropna(subset=["entry_time"]).sort_values("entry_time")
+    if df.empty:
+        return pd.DataFrame(columns=["period", "earnings"])
+    window = RANGE_WINDOWS.get(range_key)
+    if window is not None:
+        df = df[df["entry_time"] >= df["entry_time"].max() - window]
+    if df.empty:
+        return pd.DataFrame(columns=["period", "earnings"])
+    return pd.DataFrame({"period": df["entry_time"], "earnings": df["pnl"].cumsum()})
 
 
-# ══════════════════════════════════════════════════════════════════
-#  TAB 3 — Manual Trade
-# ══════════════════════════════════════════════════════════════════
-with tab_trade:
-    st.subheader("Manual Trade Entry")
-
-    crypto_syms = CRYPTO_SYMBOLS
-    stock_syms = STOCK_SYMBOLS
-
-    trade_col1, trade_col2 = st.columns(2)
-
-    with trade_col1:
-        st.markdown("#### Select Asset")
-        asset_type = st.radio("Asset type", ["Crypto", "Stock"], horizontal=True, key="trade_asset_type")
-        if asset_type == "Crypto":
-            trade_sym = st.selectbox("Crypto coin", crypto_syms, key="trade_crypto")
-        else:
-            trade_sym = st.selectbox("Stock ticker", stock_syms, key="trade_stock")
-
-        trade_side = st.radio("Side", ["Buy", "Sell"], horizontal=True, key="trade_side")
-        use_auto_signal = st.checkbox("Use bot signal (auto-analysis)", value=True, key="trade_auto")
-
-    with trade_col2:
-        st.markdown("#### Order Details")
-
-        # Show current price
-        df_trade = st.session_state.market_cache.get(trade_sym)
-        if df_trade is None or df_trade.empty:
-            df_trade = fetch_latest_market_data(ticker=trade_sym)
-            if df_trade is not None:
-                st.session_state.market_cache[trade_sym] = df_trade
-
-        current_price = None
-        price_ts = None
-        if df_trade is not None and not df_trade.empty:
-            current_price = float(df_trade["Close"].iloc[-1])
-            # Extract the timestamp of the last bar
-            if hasattr(df_trade.index, 'tz'):
-                price_ts = df_trade.index[-1]
-            else:
-                price_ts = pd.Timestamp(df_trade.index[-1])
-            st.metric("Current Price", f"${current_price:,.2f}")
-            # Show how fresh the price is
-            if price_ts is not None:
-                try:
-                    now_utc = pd.Timestamp.now(tz="UTC")
-                    ts_utc = price_ts.tz_localize("UTC") if price_ts.tzinfo is None else price_ts
-                    age = now_utc - ts_utc
-                    age_min = int(age.total_seconds() // 60)
-                    if age_min < 1:
-                        age_str = "just now"
-                    elif age_min < 60:
-                        age_str = f"{age_min}m ago"
-                    elif age_min < 1440:
-                        age_str = f"{age_min // 60}h {age_min % 60}m ago"
-                    else:
-                        age_str = f"{age_min // 1440}d ago"
-                    st.caption(f"Last bar: {ts_utc.strftime('%Y-%m-%d %H:%M %Z')} ({age_str})")
-                except Exception:
-                    st.caption(f"Last bar: {price_ts}")
-        else:
-            st.warning(f"Could not fetch price data for {trade_sym}")
-
-        if not use_auto_signal:
-            manual_confidence = st.slider("Confidence", 0.0, 1.0, 0.65, 0.05, key="trade_conf")
-        else:
-            manual_confidence = None
-
-        manual_qty = st.number_input(
-            "Quantity (0 = auto-size)",
-            min_value=0.0, value=0.0, step=0.01,
-            format="%.6f", key="trade_qty",
-        )
-
-    st.divider()
-
-    exec_col1, exec_col2, exec_col3 = st.columns([1, 1, 2])
-
-    with exec_col1:
-        execute_btn = st.button(
-            "Execute Trade", type="primary", use_container_width=True,
-            disabled=(current_price is None),
-        )
-    with exec_col2:
-        preview_btn = st.button("Preview Signal", use_container_width=True,
-                                disabled=(current_price is None))
-
-    # Signal generation / preview
-    if preview_btn or execute_btn:
-        if df_trade is None or df_trade.empty:
-            st.error(f"No market data for {trade_sym}")
-        else:
-            if use_auto_signal:
-                with st.spinner("Generating signal..."):
-                    signal = generate_trade_signal(df_trade, symbol=trade_sym)
-                if signal is None:
-                    st.warning(f"Strategy returned no signal for {trade_sym} — try manual mode")
-                else:
-                    st.json(signal)
-            else:
-                # Build manual signal
-                a_type = "crypto" if is_crypto(trade_sym) else "stock"
-                thresholds = get_trade_thresholds(
-                    current_price, manual_confidence,
-                    side=trade_side.lower(), asset_type=a_type,
-                )
-                signal = {
-                    "symbol": trade_sym,
-                    "side": trade_side.lower(),
-                    "asset_type": a_type,
-                    "entry_price": current_price,
-                    "confidence": round(manual_confidence, 4),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    **thresholds,
-                }
-                st.json(signal)
-
-            # Actually execute
-            if execute_btn and signal is not None:
-                portfolio = _get_portfolio()
-                if not portfolio.can_open_position(signal):
-                    st.error("Position rejected by portfolio risk gates")
-                else:
-                    qty = manual_qty if manual_qty > 0 else portfolio.compute_position_size(signal)
-                    execute_paper_trade(signal, portfolio)
-                    st.success(
-                        f"{'Paper' if CONFIG['use_paper_trading'] else 'Live'} "
-                        f"{signal['side'].upper()} {qty:.6f} {trade_sym} "
-                        f"@ ${current_price:,.2f}"
-                    )
-                    st.rerun()
+def _sidebar_icon(path_svg: str):
+    return f"<svg viewBox='0 0 24 24' aria-hidden='true'>{path_svg}</svg>"
 
 
-# ══════════════════════════════════════════════════════════════════
-#  TAB 4 — Autonomous AI (Real-Time Learning & Analysis)
-# ══════════════════════════════════════════════════════════════════
-with tab_autonomous:
-    st.header("Autonomous Trading System")
-    st.caption("Real-time monitoring of autonomous decision-making, learning, and analysis")
-    
-    # Auto-refresh toggle
-    col_refresh, col_interval = st.columns([3, 1])
-    with col_refresh:
-        auto_refresh = st.checkbox("Auto-refresh (every 30s)", value=False)
-    with col_interval:
-        if auto_refresh:
-            st.info("Auto-refreshing...")
-            time.sleep(30)
-            st.rerun()
-    
-    st.divider()
-    
-    # Load data
-    journal = load_autonomous_journal()
-    cost_data = load_cost_tracker()
-    portfolio = _get_portfolio()
-    prices = _current_prices()
-    summary = portfolio.summary(prices)
-    
-    # Section 1: Learning Metrics
-    st.subheader("Learning & Performance")
-    
-    metrics = build_learning_metrics_card(journal)
-    velocity = build_velocity_gauges(journal)
-    
-    # KPI Row
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total Decisions", metrics["total_decisions"])
-    col2.metric("Trades Executed", metrics["executed"])
-    col3.metric("Win Rate", f"{metrics['win_rate']:.1%}" if metrics['with_outcomes'] > 0 else "N/A")
-    col4.metric("Trades/Hour", f"{velocity['current_velocity']:.1f}")
-    col5.metric("Execution Rate", f"{velocity['execution_rate']:.1f}%")
-    
-    # Charts Row
-    col_prog, col_conf = st.columns(2)
-    with col_prog:
-        st.plotly_chart(
-            build_learning_progress_chart(journal),
-            use_container_width=True,
-        )
-    with col_conf:
-        st.plotly_chart(
-            build_win_rate_by_confidence_chart(journal),
-            use_container_width=True,
-        )
-    
-    # Symbol Preferences
-    st.plotly_chart(
-        build_symbol_preferences_chart(journal),
-        use_container_width=True,
+def render_sidebar():
+    summary = get_summary()
+    st.sidebar.markdown(
+        """
+        <div class='brand'>
+            <div class='brand-mark'>
+                <svg viewBox='0 0 24 24'><path d='M12 2.5a1.5 1.5 0 0 1 1.5 1.5v1.1A7.1 7.1 0 0 1 18.9 10h1.1a1.5 1.5 0 0 1 0 3h-1.1a7.1 7.1 0 0 1-5.4 5.4v1.1a1.5 1.5 0 0 1-3 0v-1.1A7.1 7.1 0 0 1 5.1 13H4a1.5 1.5 0 0 1 0-3h1.1A7.1 7.1 0 0 1 10.5 4.6V3.5A1.5 1.5 0 0 1 12 2.5Zm0 5.3a4.2 4.2 0 1 0 0 8.4 4.2 4.2 0 0 0 0-8.4Z' fill='currentColor'/></svg>
+            </div>
+            <span>liquidity13</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    
-    st.divider()
-    
-    # Section 2: World Events & Market Analysis
-    st.subheader("World Events Analysis")
-    
-    events = build_world_events_card()
-    
-    if events["available"]:
-        col_sent, col_mag, col_summary = st.columns([1, 1, 2])
-        
-        with col_sent:
-            sentiment_color = "normal"
-            if events["sentiment"] > 0.3:
-                sentiment_color = "normal"
-            elif events["sentiment"] < -0.3:
-                sentiment_color = "inverse"
-            
-            st.metric(
-                "Market Sentiment",
-                f"{events['sentiment']:+.2f}",
-                delta="Bullish" if events["sentiment"] > 0 else "Bearish",
-                delta_color=sentiment_color,
-            )
-        
-        with col_mag:
-            st.metric(
-                "Event Magnitude",
-                f"{events['magnitude']:.2f}",
-                help="0 = negligible, 1 = major market-moving events"
-            )
-        
-        with col_summary:
-            st.info(f"**Summary:** {events['summary']}")
-    else:
-        st.warning("World events analysis not available. Ensure the bot is running with `enable_world_events_analysis: True`")
-    
-    st.divider()
-    
-    # Section 3: Cost Tracking & Efficiency
-    st.subheader("Cost Tracking & Efficiency")
-    
-    cost_metrics = build_cost_efficiency_card(cost_data, summary["total_realised_pnl"])
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Costs", f"${cost_metrics['total_costs']:.2f}")
-    col2.metric("Net P&L", f"${cost_metrics['net_pnl']:.2f}")
-    col3.metric("Cost Ratio", f"{cost_metrics['cost_ratio']:.1f}%")
-    col4.metric("Efficiency", cost_metrics['efficiency'])
-    
-    col_breakdown, col_details = st.columns([1, 1])
-    
-    with col_breakdown:
-        st.plotly_chart(
-            build_cost_breakdown_chart(cost_data),
-            use_container_width=True,
-        )
-    
-    with col_details:
-        st.write("**Cost Details:**")
-        st.write(f"- Exchange Fees: ${cost_metrics['fees']:.2f}")
-        st.write(f"- Slippage: ${cost_metrics['slippage']:.2f}")
-        st.write(f"- API Costs: ${cost_metrics['api_costs']:.2f}")
-        st.write(f"- Total Trades: {cost_metrics['total_trades']}")
-        st.write(f"- Avg Cost/Trade: ${cost_metrics['total_costs'] / max(1, cost_metrics['total_trades']):.2f}")
-        
-        st.caption("**Efficiency Benchmarks:**")
-        st.caption("- Excellent: < 5% (Claude-level)")
-        st.caption("- Good: 5-15%")
-        st.caption("- Acceptable: 15-25%")
-        st.caption("- WARNING Poor: > 25%")
-    
-    st.divider()
-    
-    # Section 4: Recent Decisions & Reasoning
-    st.subheader("Recent Autonomous Decisions")
-    
-    decisions_df = build_recent_decisions_table(journal, limit=30)
-    
-    if not decisions_df.empty:
-        st.dataframe(
-            decisions_df,
-            use_container_width=True,
-            height=400,
-        )
-    else:
-        st.info("No decisions recorded yet. Start the bot to see autonomous decision-making in action.")
-    
-    st.divider()
-    
-    # Section 5: Live Decision Log
-    st.subheader("Live Decision Log")
-    st.caption("Real-time feed of autonomous decisions and reasoning")
-    
-    log_lines = load_recent_log_entries("logs/bot.log", lines=200)
-    filtered_logs = filter_autonomous_logs(log_lines)
-    
-    if filtered_logs:
-        log_text = "\n".join(filtered_logs[-30:])  # Last 30 relevant entries
-        st.text_area(
-            "Recent Autonomous Activity",
-            value=log_text,
-            height=400,
-            disabled=True,
-        )
-    else:
-        st.info("No autonomous activity logged yet. Ensure the bot is running.")
-    
-    # Quick actions
-    st.divider()
-    col_save, col_reset, col_status = st.columns(3)
-    
-    with col_save:
-        if st.button("Save Learning State", use_container_width=True):
-            try:
-                from models.autonomous_agent import get_autonomous_agent
-                agent = get_autonomous_agent()
-                agent.save_journal()
-                st.success("Learning state saved!")
-            except Exception as e:
-                st.error(f"Error: {e}")
-    
-    with col_reset:
-        if st.button("Refresh Data", use_container_width=True):
-            st.rerun()
-    
-    with col_status:
-        if st.button("Get Full Status", use_container_width=True):
-            try:
-                from autonomous_mode import get_autonomous_status
-                status = get_autonomous_status()
-                st.json(status)
-            except Exception as e:
-                st.error(f"Error: {e}")
+
+    current_page = st.session_state.get("nav_page", "Overview")
+    if current_page not in NAV_ITEMS:
+        current_page = "Overview"
+
+    selected = st.sidebar.radio(
+        "Navigation",
+        NAV_ITEMS,
+        index=NAV_ITEMS.index(current_page),
+        key="nav_page",
+        label_visibility="collapsed",
+    )
+
+    st.sidebar.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+    st.sidebar.caption("Local portfolio monitor")
+    st.sidebar.caption(f"SQLite: {DB_PATH.name}")
+    st.sidebar.caption(f"Trades: {len(get_trade_history(limit=1000))}")
+    st.sidebar.caption(f"Open positions: {summary['open_positions']}")
+    st.sidebar.caption(f"Win rate: {summary['win_rate'] * 100:.1f}%")
 
 
-# ══════════════════════════════════════════════════════════════════
-#  TAB 5 — Chat with Claude
-# ══════════════════════════════════════════════════════════════════
-with tab_chat:
-    st.subheader("Chat with Claude -- Market Analyst")
+def render_overview():
+    positions = get_positions()
+    trade_history = get_trade_history(limit=1000)
+    summary = get_summary()
 
-    api_key = CONFIG.get("anthropic_api_key", "")
-    if not api_key:
-        st.warning(
-            "No `ANTHROPIC_API_KEY` set in `.env`. "
-            "Add your key to enable the chat feature."
-        )
+    st.markdown(
+        """
+        <div class='topbar'>
+            <div>
+                <div class='subtle'>Dashboard</div>
+                <h1 class='title'>Overview</h1>
+            </div>
+            <div class='badge'>Local monitoring</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    # System prompt with portfolio context
-    def _build_system_prompt() -> str:
-        portfolio = _get_portfolio()
-        prices = _current_prices()
-        summary = portfolio.summary(prices)
-        positions_text = ""
-        for p in portfolio.open_positions:
-            sym = p["symbol"]
-            cur = prices.get(sym, p["entry_price"])
-            pnl = (cur - p["entry_price"]) * p["qty"] if p["side"] == "buy" else (p["entry_price"] - cur) * p["qty"]
-            positions_text += (
-                f"  - {p['side'].upper()} {p['qty']:.4f} {sym} "
-                f"@ ${p['entry_price']:.2f}  current=${cur:.2f}  P&L=${pnl:.2f}\n"
-            )
-        if not positions_text:
-            positions_text = "  (no open positions)\n"
+    def pnl_tone(v: float) -> str:
+        return "positive" if v >= 0 else "negative"
 
-        return (
-            "You are an expert financial analyst and trading advisor embedded in a "
-            "multi-asset trading bot that trades crypto and US stocks. "
-            "You have access to the user's live portfolio state below.\n\n"
-            f"Portfolio Summary:\n"
-            f"  Equity: ${summary['equity']:,.2f}\n"
-            f"  Cash: ${summary['cash']:,.2f}\n"
-            f"  Open positions: {summary['open_positions']}\n"
-            f"  Closed trades: {summary['closed_trades']}\n"
-            f"  Realised P&L: ${summary['total_realised_pnl']:,.2f}\n"
-            f"  Win rate: {summary['win_rate']*100:.1f}%\n\n"
-            f"Open Positions:\n{positions_text}\n"
-            f"Watchlist symbols: {get_all_symbols()}\n\n"
-            "Answer the user's questions about markets, trading strategy, "
-            "technical analysis, news, or their portfolio. Be concise and practical. "
-            "When appropriate, suggest specific actions (buy/sell/hold) with reasoning."
-        )
+    cards = [
+        ("Realized P&L", f"${summary['realized_pnl']:.2f}", f"{summary['total_trades']} closed trades", pnl_tone(summary["realized_pnl"])),
+        ("Paper P&L", f"${summary['paper_pnl']:.2f}", "paper trading", pnl_tone(summary["paper_pnl"])),
+        ("Live P&L", f"${summary['live_pnl']:.2f}", "live trading", pnl_tone(summary["live_pnl"])),
+        ("Open Exposure", f"${summary['open_exposure']:.2f}", f"{summary['open_positions']} open positions", "neutral"),
+    ]
+    metric_html = "".join(
+        f"<div class='metric-card'>"
+        f"<div class='metric-head'><span>{label}</span><span class='metric-icon'><svg viewBox='0 0 24 24'><path d='M4 18h16v2H4zm1-2.5 4.4-4.4 3.2 3.2L18.5 6l1.5 1.5-7.8 8.9-3.6-3.6L5 15.5Z' fill='currentColor'/></svg></span></div>"
+        f"<div class='metric-value {tone}'>{value}</div>"
+        f"<div class='metric-foot'>{foot}</div>"
+        f"</div>"
+        for label, value, foot, tone in cards
+    )
+    st.markdown(f"<div class='metric-grid'>{metric_html}</div>", unsafe_allow_html=True)
 
-    # Chat messages
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    range_mode = st.segmented_control(
+        "",
+        options=["1H", "1D", "1M", "6M", "1Y", "ALLTIME"],
+        default="ALLTIME",
+        selection_mode="single",
+        label_visibility="collapsed",
+    )
+    earnings_df = build_earnings_series(trade_history, range_mode)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=earnings_df["period"], y=earnings_df["earnings"], mode="lines", line=dict(color="#74f3b4", width=3), fill="tozeroy", fillcolor="rgba(116,243,180,0.1)"))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10,r=10,t=10,b=10),
+        height=280,
+        xaxis=dict(showgrid=False, linecolor="rgba(148,163,184,0.2)", tickfont=dict(color="#9aa8bd", size=11)),
+        yaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.12)", linecolor="rgba(148,163,184,0.2)", tickfont=dict(color="#9aa8bd", size=11)),
+        font=dict(color="#e7edf7"),
+        showlegend=False,
+    )
 
-    # User input
-    user_input = st.chat_input("Ask Claude about markets, your portfolio, strategy...")
-    if user_input:
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
-        # Call Claude
-        with st.chat_message("assistant"):
-            if not api_key:
-                response = "No API key configured. Please add ANTHROPIC_API_KEY to your .env file."
-                st.markdown(response)
-            else:
-                with st.spinner("Thinking..."):
-                    try:
-                        import anthropic
-                        client = anthropic.Anthropic(api_key=api_key)
-
-                        # Build messages list from history
-                        messages = []
-                        for m in st.session_state.chat_history:
-                            messages.append({"role": m["role"], "content": m["content"]})
-
-                        message = client.messages.create(
-                            model=CONFIG.get("anthropic_model", "claude-3-5-sonnet-latest"),
-                            max_tokens=2048,
-                            temperature=0.4,
-                            system=_build_system_prompt(),
-                            messages=messages,
-                        )
-                        response = message.content[0].text
-                    except Exception as e:
-                        response = f"Error calling Claude: {e}"
-
-                st.markdown(response)
-
-        st.session_state.chat_history.append({"role": "assistant", "content": response})
-
-
-# ══════════════════════════════════════════════════════════════════
-#  TAB 6 — Logs
-# ══════════════════════════════════════════════════════════════════
-with tab_logs:
-    log_col1, log_col2 = st.columns(2)
-
-    with log_col1:
-        st.subheader("Trade Log (CSV)")
-        log_path = CONFIG.get("trade_log_path", "logs/trade_log.csv")
-        if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
-            try:
-                log_df = pd.read_csv(log_path)
-                st.dataframe(log_df.tail(100).iloc[::-1], use_container_width=True, hide_index=True)
-            except Exception as e:
-                st.warning(f"Could not read trade log: {e}")
+    left, right = st.columns([1.4, 0.9])
+    with left:
+        st.markdown(f"<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Cumulative P&L</div><div class='mini-chip'>{(range_mode or 'ALLTIME').lower()}</div></div></div></div>", unsafe_allow_html=True)
+        if earnings_df.empty:
+            st.write("No trades in this range.")
         else:
-            st.info("No trades logged yet")
+            st.plotly_chart(fig, use_container_width=True)
+    with right:
+        st.markdown("<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Win rate</div><div class='mini-chip'>closed trades</div></div></div></div>", unsafe_allow_html=True)
+        win_rate_pct = summary["win_rate"] * 100
+        gauge = go.Figure(go.Indicator(mode="gauge+number", value=win_rate_pct, domain={"x": [0, 1], "y": [0, 1]}, number={"suffix": "%", "font":{"color":"#e7edf7","size":28}}, gauge={"axis":{"range":[0,100],"tickwidth":1,"tickcolor":"#6e7f9f"}, "bar":{"color":"#7ee7b8"}, "bgcolor":"rgba(0,0,0,0)", "steps":[{"range":[0,50],"color":"rgba(255,255,255,0.08)"},{"range":[50,80],"color":"rgba(126,231,184,0.18)"},{"range":[80,100],"color":"rgba(126,231,184,0.4)"}], "threshold":{"line":{"color":"#7ee7b8","width":3},"thickness":0.75,"value":50}}))
+        gauge.update_layout(margin=dict(t=10,b=10,l=10,r=10), height=220, paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#e7edf7"))
+        st.plotly_chart(gauge, use_container_width=True)
 
-    with log_col2:
-        st.subheader("Bot Log (last 80 lines)")
-        bot_log_path = CONFIG.get("bot_log_path", "logs/bot.log")
-        if os.path.exists(bot_log_path):
-            try:
-                with open(bot_log_path, "r") as f:
-                    lines = f.readlines()
-                tail = lines[-80:] if len(lines) > 80 else lines
-                st.code("".join(tail), language="log")
-            except Exception as e:
-                st.warning(f"Could not read bot log: {e}")
+    lower_left, lower_right = st.columns([1.1, 1.1])
+    with lower_left:
+        st.markdown("<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>P&L by strategy</div><div class='mini-chip'>closed trades</div></div></div></div>", unsafe_allow_html=True)
+        if trade_history.empty:
+            st.write("No strategy data yet.")
         else:
-            st.info("No bot log file yet")
+            strategy_df = (
+                trade_history.groupby("strategy", dropna=False)
+                .agg(trades=("pnl", "size"), wins=("pnl", lambda s: int((s > 0).sum())), pnl=("pnl", "sum"))
+                .reset_index()
+                .sort_values("pnl", ascending=False)
+            )
+            strategy_df["win rate"] = (strategy_df["wins"] / strategy_df["trades"] * 100).map(lambda x: f"{x:.1f}%")
+            strategy_df["pnl"] = strategy_df["pnl"].map(lambda x: f"${x:.2f}")
+            st.dataframe(strategy_df[["strategy", "trades", "win rate", "pnl"]], hide_index=True, width="stretch")
 
-    st.divider()
-
-    # Portfolio state JSON viewer
-    with st.expander("Raw Portfolio State (JSON)"):
-        state_path = CONFIG.get("state_path", "logs/bot_state.json")
-        if os.path.exists(state_path):
-            with open(state_path, "r") as f:
-                state = json.load(f)
-            st.json(state)
+    with lower_right:
+        st.markdown("<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Top symbols by P&L</div><div class='mini-chip'>closed trades</div></div></div></div>", unsafe_allow_html=True)
+        if trade_history.empty:
+            st.write("No symbol data yet.")
         else:
-            st.info("No saved state file")
+            symbol_df = (
+                trade_history.groupby("symbol", dropna=False)
+                .agg(trades=("pnl", "size"), wins=("pnl", lambda s: int((s > 0).sum())), pnl=("pnl", "sum"))
+                .reset_index()
+                .sort_values("pnl", ascending=False)
+                .head(8)
+            )
+            symbol_df["win rate"] = (symbol_df["wins"] / symbol_df["trades"] * 100).map(lambda x: f"{x:.1f}%")
+            symbol_df["pnl"] = symbol_df["pnl"].map(lambda x: f"${x:.2f}")
+            st.dataframe(symbol_df[["symbol", "trades", "win rate", "pnl"]], hide_index=True, width="stretch")
 
-    # Config viewer
-    with st.expander("Bot Configuration"):
-        safe_config = {k: v for k, v in CONFIG.items()
-                       if "key" not in k.lower() and "secret" not in k.lower()
-                       and "password" not in k.lower() and "passphrase" not in k.lower()}
-        st.json(safe_config)
+    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='panel'><div class='panel-inner'><div class='panel-header'><div class='panel-title'>Recent trade log</div><div class='mini-chip'>local</div></div></div></div>", unsafe_allow_html=True)
+    if trade_history.empty:
+        st.write("No trade history has been recorded yet.")
+    else:
+        trade_view = trade_history[["symbol", "strategy", "pnl", "pnl_pct", "win_loss", "entry_time", "is_paper"]].copy()
+        trade_view = trade_view.head(10)
+        trade_view["pnl"] = trade_view["pnl"].map(lambda x: f"${x:.2f}")
+        trade_view["pnl_pct"] = trade_view["pnl_pct"].map(lambda x: f"{x:.2f}%")
+        trade_view["session"] = trade_view["is_paper"].map({1: "Paper", 0: "Live"})
+        trade_view = trade_view.drop(columns=["is_paper"])
+        st.dataframe(trade_view, hide_index=True, width="stretch")
+
+
+def render_placeholder(title: str):
+    st.markdown(
+        f"""
+        <div class='topbar'>
+            <div><div class='subtle'>Dashboard</div><h1 class='title'>{title}</h1></div>
+            <div class='badge'>Local</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div class='panel'><div class='panel-inner'>
+        <div class='panel-title'>This section is ready for local portfolio content.</div>
+        </div></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+st.markdown(
+    """
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+      :root {
+        --bg: #070d15;
+        --bg-2: #0d141d;
+        --panel: rgba(18, 25, 34, 0.95);
+        --panel-2: rgba(14, 19, 27, 0.9);
+        --line: rgba(148, 163, 184, 0.12);
+        --text: #eaf1f8;
+        --muted: #8ea1be;
+        --green: #69e7af;
+        --green-2: #4fc98f;
+        --cyan: #7de7ff;
+        --red: #ff8e9d;
+        --yellow: #f9d66c;
+      }
+      html, body, [data-testid="stAppViewContainer"] { background: linear-gradient(180deg, #04090f 0%, #090f17 100%); font-family: 'Inter', sans-serif; color: var(--text); }
+      [data-testid="stAppViewContainer"] > .main { background: transparent; }
+      .block-container { padding-top: 1.1rem; padding-left: 1.4rem; padding-right: 1.4rem; max-width: 1500px; }
+      section[data-testid="stSidebar"] { background: rgba(10, 15, 22, 0.9); border-right: 1px solid var(--line); }
+      .brand { display: flex; align-items: center; gap: 0.7rem; padding: 0.4rem 0.5rem 1.1rem; font-size: 1.05rem; font-weight: 700; }
+      .brand-mark { width: 28px; height: 28px; border-radius: 10px; display: grid; place-items: center; background: rgba(125,231,255,0.08); border: 1px solid rgba(125,231,255,0.22); color: var(--cyan); }
+      .brand-mark svg { width: 16px; height: 16px; }
+      .stButton > button {
+        border-radius: 12px; margin: 0.18rem 0; padding: 0.7rem 0.8rem; background: rgba(255,255,255,0.02); border: 1px solid transparent; color: var(--text); font-weight: 500; text-align: left; transition: 0.2s ease; }
+      .stButton > button:hover { border-color: rgba(125,231,255,0.2); }
+      .stButton > button[kind='primary'] { background: rgba(125,231,255,0.08); border-color: rgba(125,231,255,0.16); }
+      .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+      .title { margin: 0; font-size: 2rem; letter-spacing: -0.05em; font-weight: 700; }
+      .subtle { color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.72rem; }
+      .badge { padding: 0.45rem 0.7rem; border-radius: 999px; border: 1px solid rgba(105,231,175,0.25); color: var(--green); background: rgba(105,231,175,0.08); font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; }
+      .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0 1.2rem; }
+      .metric-card { background: linear-gradient(180deg, rgba(17,24,32,0.94), rgba(12,17,25,0.96)); border: 1px solid var(--line); border-radius: 16px; padding: 0.9rem 1rem; min-height: 124px; }
+      .metric-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+      .metric-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 10px; background: rgba(125,231,255,0.08); color: var(--cyan); }
+      .metric-icon svg { width: 15px; height: 15px; }
+      .metric-value { font-size: clamp(1.8rem, 2vw, 2.4rem); line-height: 1.05; font-weight: 700; letter-spacing: -0.06em; margin-top: 0.8rem; }
+      .metric-foot { margin-top: 0.45rem; color: var(--muted); font-size: 0.75rem; }
+      .positive { color: var(--green); }
+      .negative { color: #f87171; }
+      .neutral { color: var(--yellow); }
+      .panel { background: linear-gradient(180deg, rgba(15,22,30,0.96), rgba(10,17,23,0.96)); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 18px 40px rgba(4, 8, 12, 0.25); }
+      .panel-inner { padding: 0.95rem 1rem 1rem; }
+      .panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.7rem; }
+      .panel-title { color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.72rem; }
+      .mini-chip { padding: 0.26rem 0.55rem; border-radius: 999px; background: rgba(255,255,255,0.02); border: 1px solid var(--line); color: var(--muted); font-size: 0.68rem; }
+      .stDataFrame { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+      .stDataFrame th { color: var(--muted); text-transform: uppercase; font-size: 0.68rem; }
+      .stDataFrame td { color: var(--text); }
+      .stDataFrame { background: rgba(10,15,22,0.55); }
+      @media (max-width: 1100px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = "Overview"
+
+render_sidebar()
+
+page = st.session_state.nav_page
+if page == "Overview":
+    render_overview()
+else:
+    render_placeholder(page)

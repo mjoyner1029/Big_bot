@@ -4,7 +4,6 @@ Comprehensive tests for config loading, validation, and API key checking.
 """
 
 import unittest
-import os
 import sys
 from pathlib import Path
 
@@ -14,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.config import CONFIG, get_all_symbols, is_crypto
 from config.validator import ConfigValidator, ValidationLevel, validate_config
-from config.health_check import SystemHealthChecker, HealthStatus, check_system_health
+from config.health_check import SystemHealthChecker, check_system_health
 
 
 class TestConfigLoading(unittest.TestCase):

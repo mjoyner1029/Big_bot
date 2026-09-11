@@ -118,13 +118,14 @@ STOCK_SYMBOLS: list[str] = [
     "ABNB", "UBER", "LYFT", "DASH", "OPEN", "CLOV", "WISH",
     "GME", "AMC", "BBBY", "BB", "NOK", "SPCE", "PLUG", "FCEL",
     "WKHS", "GOEV", "QS", "CHPT", "BLNK", "RUN", "ENPH", "SEDG",
-    "FSLR", "CELH", "HIMS", "CAVA", "BIRK", "ARM", "IONQ", "RGTI",
+    "FSLR", "CELH", "HIMS", "CAVA", "BIRK", "ARM", "IONQ", "RGTI", "QBTS",
+    "OKLO", "SMR", "TE", "EOSE", "TTWO", "STRV", "STRF",
     # ─── Major ETFs ───────────────────────────────────────────────
     "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "IVV", "ARKK",
     "ARKG", "ARKF", "ARKW", "XLK", "XLF", "XLE", "XLV", "XLI",
     "XLP", "XLU", "XLY", "XLB", "XLRE", "GLD", "SLV", "USO",
     "TLT", "HYG", "LQD", "EEM", "EFA", "VWO", "VEA", "IEMG",
-    "SOXL", "TQQQ", "SQQQ", "SPXU", "UVXY", "VXX",
+    "SOXL", "TQQQ", "SQQQ", "SPXU", "UVXY", "VXX", "UPRO", "SPXL",
 ]
 
 
