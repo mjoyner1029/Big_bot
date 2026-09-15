@@ -127,6 +127,7 @@ def fetch_latest_market_data(
     primary_df = _primary_fetch_market_data(ticker=ticker, period=period, interval=interval)
     if primary_df is not None and not primary_df.empty:
         primary_df = _add_ohlcv_alias_columns(primary_df)
+        primary_df.attrs["timeframe"] = interval
         ttl = _CACHE_TTL_CRYPTO if "-" in ticker else _CACHE_TTL_STOCK
         _cache_set(ckey, primary_df, ttl)
         logging.info(f"Fetched {len(primary_df)} bars for {ticker} via primary provider")
@@ -165,6 +166,7 @@ def fetch_latest_market_data(
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         data = _add_ohlcv_alias_columns(data)
+        data.attrs["timeframe"] = interval
         ttl = _CACHE_TTL_CRYPTO if "-" in ticker else _CACHE_TTL_STOCK
         _cache_set(ckey, data, ttl)
         logging.info(f"Fetched {len(data)} bars for {ticker} ({interval})")
@@ -484,12 +486,15 @@ def _fallback_fetch_market_data(ticker: str, period: str, interval: str) -> Opti
     crypto_df = _fetch_coinbase_candles(ticker=ticker, interval=interval)
     if crypto_df is not None and not crypto_df.empty:
         crypto_df = _add_ohlcv_alias_columns(crypto_df)
+        crypto_df.attrs["timeframe"] = interval
         logging.info(f"Fallback fetch succeeded via Coinbase for {ticker} ({interval})")
         return crypto_df
 
     stock_df = _fetch_stooq_daily(ticker=ticker)
     if stock_df is not None and not stock_df.empty:
         stock_df = _add_ohlcv_alias_columns(stock_df)
+        # Stooq fallback is daily regardless of the requested interval.
+        stock_df.attrs["timeframe"] = "1d"
         logging.info(f"Fallback fetch succeeded via Stooq for {ticker} (daily)")
         return stock_df
 
@@ -584,7 +589,7 @@ def _period_start(period: str) -> datetime:
     return now - mapping.get(period, timedelta(days=90))
 
 
-def _fetch_coinbase_candles(ticker: str, interval: str) -> Optional[pd.DataFrame]:
+def _fetch_coinbase_candles(ticker: str, interval: str, period: Optional[str] = None) -> Optional[pd.DataFrame]:
     if "-" not in ticker:
         return None
 
@@ -599,16 +604,39 @@ def _fetch_coinbase_candles(ticker: str, interval: str) -> Optional[pd.DataFrame
     url = f"https://api.exchange.coinbase.com/products/{ticker}/candles"
     params = {"granularity": granularity}
     try:
-        response = requests.get(url, params=params, timeout=6)
-        response.raise_for_status()
-        rows = response.json()
+        if period is None:
+            response = requests.get(url, params=params, timeout=6)
+            response.raise_for_status()
+            rows = response.json()
+        else:
+            from data.history import history_start
+            end = datetime.now(timezone.utc)
+            start = history_start(period, end)
+            cursor = start
+            rows = []
+            while cursor < end:
+                stop = min(cursor + timedelta(seconds=granularity * 299), end)
+                response = requests.get(url, params={
+                    **params, "start": cursor.isoformat(), "end": stop.isoformat()
+                }, timeout=10)
+                response.raise_for_status()
+                batch = response.json()
+                if not isinstance(batch, list) or not batch:
+                    logging.warning("History unavailable for %s: empty candle page", ticker)
+                    return None
+                rows.extend(batch)
+                cursor = stop
+                if cursor < end:
+                    time.sleep(0.15)
         if not isinstance(rows, list) or not rows:
             return None
 
         # Coinbase format: [time, low, high, open, close, volume]
         df = pd.DataFrame(rows, columns=["time", "Low", "High", "Open", "Close", "Volume"])
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-        df = df.sort_values("time").set_index("time")
+        df = df.sort_values("time").drop_duplicates("time").set_index("time")
+        if period is not None:
+            df = df.loc[(df.index >= start) & (df.index <= end)]
         for col in ["Open", "High", "Low", "Close", "Volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         return df.dropna(subset=["Open", "High", "Low", "Close"])

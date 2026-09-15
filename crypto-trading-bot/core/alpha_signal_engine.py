@@ -30,6 +30,7 @@ from core.alpha_library import (
     SIGNAL_ELIGIBLE_STATES,
 )
 from core.feature_registry import FeatureRegistry
+from core.ohlcv import normalize_ohlcv
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,7 @@ class AlphaSignalEngine:
 
         alphas = self.library.eligible_alphas()
         if not alphas:
+            logger.info("Alpha pipeline NO TRADE — no signal-eligible alphas in library")
             return []
 
         for alpha in alphas:
@@ -244,9 +246,15 @@ class AlphaSignalEngine:
                          execution_mode) -> Optional[OpportunityCandidate]:
         alpha_id = alpha["alpha_id"]
 
-        # Data quality gate
+        try:
+            df = normalize_ohlcv(df)
+        except ValueError as exc:
+            self._reject(alpha_id, symbol, ReasonCode.DATA_QUALITY_FAILURE, str(exc))
+            return None
+        # Validate against the actual feed timeframe, not a hardcoded 15m default.
         if self.data_quality_monitor is not None:
-            result = self.data_quality_monitor.check(df, symbol=symbol)
+            timeframe = df.attrs.get("timeframe", "15m")
+            result = self.data_quality_monitor.check(df, symbol=symbol, timeframe=timeframe)
             if not result.passed:
                 self._reject(alpha_id, symbol, ReasonCode.DATA_QUALITY_FAILURE,
                              "; ".join(result.issues[:3]))

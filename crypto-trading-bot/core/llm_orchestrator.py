@@ -342,3 +342,100 @@ Weight based on current conditions (higher weight = more allocation).
     def get_last_decision(self) -> Optional[Dict]:
         """Get the most recent strategy decision."""
         return self.last_decision
+
+    @staticmethod
+    def _trade_pnls(trades: List) -> List[float]:
+        """Extract finite realized P&L values from dicts or trade objects."""
+        import math
+
+        values = []
+        for trade in trades or []:
+            raw = trade.get('pnl', 0.0) if isinstance(trade, dict) else getattr(trade, 'pnl', 0.0)
+            try:
+                pnl = float(raw or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(pnl):
+                values.append(pnl)
+        return values
+
+    def analyze_trade_performance(
+        self,
+        trades: List,
+        current_strategies: Optional[List[str]] = None,
+        market_data: Optional[Dict] = None,
+    ) -> Dict:
+        """Return a dependable review payload for the intraday learning job.
+
+        Adaptations remain disabled here. Parameter changes must continue through
+        the experiment and validation controls owned by the trading bot.
+        """
+        pnls = self._trade_pnls(trades)
+        if not pnls:
+            return {
+                'trade_count': 0,
+                'win_rate': 0.0,
+                'average_pnl': 0.0,
+                'recommendations': 'No resolved trades are available to review.',
+                'should_adapt': False,
+                'adaptations': {},
+            }
+
+        wins = sum(pnl > 0 for pnl in pnls)
+        win_rate = wins / len(pnls)
+        average_pnl = sum(pnls) / len(pnls)
+        if len(pnls) < 5:
+            recommendation = 'Collect more resolved paper trades before proposing changes.'
+        elif win_rate < 0.4 or average_pnl < 0:
+            recommendation = 'Review losing signals and execution evidence before proposing a validated experiment.'
+        else:
+            recommendation = 'Recent paper results are stable; continue collecting evidence.'
+
+        return {
+            'trade_count': len(pnls),
+            'win_rate': win_rate,
+            'average_pnl': average_pnl,
+            'recommendations': recommendation,
+            'should_adapt': False,
+            'adaptations': {},
+        }
+
+    def end_of_day_analysis(
+        self,
+        trades: List,
+        daily_decision: Optional[Dict] = None,
+        strategies_used: Optional[List[str]] = None,
+    ) -> Dict:
+        """Build the structured learning record expected by the paper runner."""
+        performance = self.analyze_trade_performance(
+            trades=trades,
+            current_strategies=strategies_used,
+        )
+        count = performance['trade_count']
+        if count == 0:
+            return {
+                'successes': [],
+                'failures': [],
+                'insights': 'No resolved paper trades were available for end-of-day analysis.',
+                'tomorrow_plan': 'Keep paper trading and collect validated execution evidence.',
+                'performance': performance,
+            }
+
+        win_rate = performance['win_rate']
+        average_pnl = performance['average_pnl']
+        successes = [f"{win_rate:.0%} win rate across {count} resolved trades"] if win_rate >= 0.5 else []
+        failures = []
+        if win_rate < 0.4:
+            failures.append(f"Low win rate: {win_rate:.0%}")
+        if average_pnl < 0:
+            failures.append(f"Negative average P&L: ${average_pnl:.2f}")
+        insight = (
+            f"Reviewed {count} resolved trades with average P&L ${average_pnl:.2f}."
+        )
+        return {
+            'successes': successes,
+            'failures': failures,
+            'insights': insight,
+            'tomorrow_plan': performance['recommendations'],
+            'performance': performance,
+        }

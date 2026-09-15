@@ -384,7 +384,11 @@ def render_alpha_engine():
         "universe, net_expectancy, edge_health_score, updated_at "
         "FROM alpha_library ORDER BY updated_at DESC")
     if alphas.empty:
-        st.info("Alpha library empty — run a research campaign.")
+        campaign_count = _table("SELECT COUNT(*) AS n FROM campaign_hypotheses")
+        if not campaign_count.empty and int(campaign_count.iloc[0]["n"] or 0) > 0:
+            st.info("Alpha library empty — research has run, but no candidates passed validation.")
+        else:
+            st.info("Alpha library empty — run a research campaign.")
     else:
         counts = alphas["lifecycle_state"].value_counts().to_dict()
         st.markdown(" ".join(

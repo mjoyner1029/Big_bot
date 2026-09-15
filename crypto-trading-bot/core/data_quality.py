@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from core.ohlcv import normalize_ohlcv
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +121,12 @@ class DataQualityMonitor:
                 issues=[f"Missing columns: {missing_cols}"], quality_score=0.0,
             )
 
-        df = df.copy()
-        df.columns = [c.lower() for c in df.columns]
+        try:
+            df = normalize_ohlcv(df)
+        except ValueError as exc:
+            return DataQualityResult(
+                symbol=symbol, timeframe=timeframe, passed=False, n_bars=n_bars,
+                issues=[str(exc)], quality_score=0.0)
 
         # 2. Impossible prices
         bad_price   = self._check_impossible_prices(df, checks)

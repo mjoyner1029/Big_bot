@@ -320,6 +320,30 @@ class TestPaperBroker:
         pos = broker.get_position("BTC-USD")
         assert pos is None
 
+    def test_short_entry_and_buy_to_cover(self, broker):
+        from core.broker import OrderStatus
+        short = broker.submit_and_wait(
+            symbol="BTC-USD", side="SELL", quantity=0.1,
+            current_price=50_000.0)
+        assert short.status == OrderStatus.FILLED
+        pos = broker.get_position("BTC-USD")
+        assert pos is not None
+        assert pos.side == "SHORT"
+        assert broker.get_account().equity == pytest.approx(10_000.0)
+
+        covered = broker.close_position("BTC-USD", current_price=49_000.0)
+        assert covered.status == OrderStatus.FILLED
+        assert covered.side == "BUY"
+        assert broker.get_position("BTC-USD") is None
+        assert broker.get_account().cash == pytest.approx(10_100.0)
+
+    def test_short_respects_buying_power(self, broker):
+        from core.broker import OrderStatus
+        result = broker.submit_and_wait(
+            symbol="BTC-USD", side="SELL", quantity=1.0,
+            current_price=50_000.0)
+        assert result.status == OrderStatus.REJECTED
+
     def test_get_account_equity(self, broker):
         acct = broker.get_account()
         assert acct.equity == pytest.approx(10_000.0)

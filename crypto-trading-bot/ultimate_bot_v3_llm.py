@@ -36,6 +36,8 @@ if _missing_vars:
 
 # Core systems
 from data.fetcher import fetch_latest_market_data
+from config.config import CONFIG
+from core.ohlcv import normalize_ohlcv
 from core.llm_orchestrator import LLMOrchestrator
 from core.safety_manager import SafetyManager
 from core.health_monitor import HealthMonitor
@@ -111,6 +113,7 @@ class LLMTradingBot:
         from core.universe_scanner import UniverseScanner, ScannerConfig
         self.scanner = UniverseScanner(config=ScannerConfig(
             min_volume_usd_24h=5_000_000,
+            min_atr_pct=float(os.environ.get('SCANNER_MIN_ATR_PCT', '0.0005')),
             top_n=10,
         ))
         
@@ -171,7 +174,7 @@ class LLMTradingBot:
             # Universe scanner
             "scanner_top_n":              10,
             "scanner_min_volume_usd":     5_000_000,
-            "scanner_min_atr_pct":        0.005,
+            "scanner_min_atr_pct":        self.scanner.config.min_atr_pct,
             "scanner_max_atr_pct":        0.08,
         })
 
@@ -411,7 +414,9 @@ class LLMTradingBot:
         """Check if market conditions are safe for trading."""
         try:
             # Data-quality gate: a strategy with bad inputs must abstain
+            timeframe = df.attrs.get("timeframe", CONFIG.get("interval", "1h"))
             quality = self.data_quality_monitor.check(df, symbol=symbol,
+                                                      timeframe=timeframe,
                                                       require_fresh=True)
             if not quality.passed:
                 return False, f"Data quality failed: {quality.summary()}"
@@ -424,8 +429,13 @@ class LLMTradingBot:
             mid = (high + low) / 2
             bar_range_pct = (high - low) / mid if mid > 0 else 1.0
 
-            if bar_range_pct > 0.003:  # 0.3% intrabar range — erratic pricing
-                return False, f"Bar range too wide ({bar_range_pct*100:.2f}% high-low, liquidity-risk proxy)"
+            scanner_config = getattr(getattr(self, 'scanner', None), 'config', None)
+            max_bar_range = getattr(scanner_config, 'max_bar_range_pct', 0.05)
+            if bar_range_pct > max_bar_range:
+                return False, (
+                    f"Bar range too wide ({bar_range_pct*100:.2f}% high-low "
+                    f"> {max_bar_range*100:.2f}% limit, liquidity-risk proxy)"
+                )
 
             # Check volume (liquidity)
             current_vol = float(df['volume'].iloc[-5:].mean())
@@ -446,14 +456,20 @@ class LLMTradingBot:
         # Fetch data
         df = fetch_latest_market_data(symbol)
         if df is None or len(df) < 50:
+            logger.info(f"[{symbol}] NO TRADE — insufficient market history")
             return None
-        
+        try:
+            df = normalize_ohlcv(df)
+        except ValueError as exc:
+            logger.warning(f"[{symbol}] NO TRADE — {exc}")
+            return None
+
         current_price = float(df['close'].iloc[-1])
         
         # Check market conditions FIRST
         conditions_ok, condition_reason = self.check_market_conditions(symbol, df)
         if not conditions_ok:
-            logger.debug(f"[{symbol}] Skipping: {condition_reason}")
+            logger.info(f"[{symbol}] NO TRADE — {condition_reason}")
             return None
         
         # STEP 2: Market analysis
@@ -472,6 +488,7 @@ class LLMTradingBot:
         
         # Get signals from active strategies (selected by LLM)
         strategy_signals = []
+        strategy_rejections = []
         for name, strategy in self.active_strategies.items():
             try:
                 sig = strategy.generate_signal(symbol, {'df': df})
@@ -487,15 +504,22 @@ class LLMTradingBot:
                             'targets': list(getattr(sig, 'targets', []) or []),
                         })
                         logger.info(f"[{symbol}] {name}: {sig_type} ({confidence:.0f}%)")
+                    else:
+                        reason = getattr(sig, 'reason', None) or sig_type
+                        strategy_rejections.append(f"{name}: {reason}")
             except Exception as e:
                 logger.error(f"[{symbol}] {name} error: {e}")
 
         if not strategy_signals:
+            logger.info(f"[{symbol}] NO TRADE — no BUY/SELL signal from "
+                        f"{len(self.active_strategies)} active strategies; "
+                        f"reasons: {' | '.join(strategy_rejections) or 'none returned'}")
             return None
 
         # ── Weighted voting — strategies weighted by historical expectancy ─────
         trade_signal = self._weighted_vote(strategy_signals, symbol)
         if trade_signal is None:
+            logger.info(f"[{symbol}] NO TRADE — strategy vote did not agree")
             return None
         
         # Kronos validation (if available and aligned)
@@ -603,10 +627,10 @@ class LLMTradingBot:
         validation → PAPER alphas). Fail-soft — research never blocks trading.
         Scale is config-driven (campaign batching handles large universes)."""
         if max_instruments is None:
-            # Documented default: 1000 liquid instruments (0 = full universe);
-            # campaign batching + fetch throttling keep providers safe
+            # Bound scheduled work; callers can opt into a larger universe
+            # after wiring providers with matching history coverage.
             max_instruments = int(os.environ.get(
-                'ALPHA_RESEARCH_WEEKLY_MAX', '1000'))
+                'ALPHA_RESEARCH_WEEKLY_MAX', '50'))
         try:
             from core.instruments import InstrumentUniverse
             from core.research_orchestrator import AutonomousResearchOrchestrator
@@ -618,17 +642,31 @@ class LLMTradingBot:
             from data.research_interfaces import default_interface_sources
 
             universe = InstrumentUniverse()
-            instruments = universe.crypto() + universe.etfs() + universe.stocks()
+            requested_classes = {
+                value.strip().lower() for value in os.environ.get(
+                    'ALPHA_RESEARCH_ASSET_CLASSES', 'crypto').split(',')
+                if value.strip()
+            }
+            instruments = []
+            if 'crypto' in requested_classes:
+                instruments.extend(universe.crypto())
+            if 'etf' in requested_classes or 'etfs' in requested_classes:
+                instruments.extend(universe.etfs())
+            if 'stock' in requested_classes or 'stocks' in requested_classes:
+                instruments.extend(universe.stocks())
             # 0 or negative = NO cap: the campaign batches the full eligible
             # universe internally (no hidden truncation — spec §41-42)
             if max_instruments and max_instruments > 0:
                 instruments = instruments[:max_instruments]
+            logger.info(
+                "Weekly research universe: %d instruments (%s)",
+                len(instruments), ",".join(sorted(requested_classes)))
+            from data.history import fetch_research_history
             data = {}
             for inst in instruments:
-                df = fetch_latest_market_data(inst.symbol, period="2y", interval="1d")
+                df = fetch_research_history(inst.symbol, period="2y", interval="1d")
                 if df is not None and len(df) >= 200:
-                    df = df.copy()
-                    df.columns = [str(c).lower() for c in df.columns]
+                    df = normalize_ohlcv(df)
                     data[inst.symbol] = df
             if not data:
                 logger.info("Weekly research: no usable history — skipped")
@@ -680,8 +718,8 @@ class LLMTradingBot:
         for symbol in fetch_list:
             df = fetch_latest_market_data(symbol)
             if df is not None and len(df) >= 50:
-                df = df.copy()
-                df.columns = [str(c).lower() for c in df.columns]
+                df = normalize_ohlcv(df)
+                df.attrs["timeframe"] = CONFIG.get("interval", "1h")
                 market_data[symbol] = df
         if not market_data:
             return []
@@ -1307,7 +1345,7 @@ class LLMTradingBot:
             stop_loss=stop_loss,
             take_profit=take_profit,
             strategies_used=decision.get('strategy_signals', []),
-            kronos_confidence=decision.get('kronos_signal', {}).get('confidence', 0),
+            kronos_confidence=(decision.get('kronos_signal') or {}).get('confidence', 0),
             broker_order_id=fill.order_id,
         )
 
@@ -1849,12 +1887,20 @@ class LLMTradingBot:
         returns = (close[1:] / close[:-1]) - 1
         volatility = returns[-20:].std()
         
+        # Hourly crypto return volatility is normally well below 1%. The old
+        # 1%-4% band made ordinary liquid markets score 0.3-0.5 forever.
         score = 0.5
-        if vol_ratio > 1.2: score += 0.2
-        if 0.01 < volatility < 0.04: score += 0.2
-        if vol_ratio < 0.8: score -= 0.2
-        
-        return {'score': score, 'vol_ratio': vol_ratio, 'volatility': volatility}
+        if vol_ratio > 1.2:
+            score += 0.2
+        elif vol_ratio >= 0.8:
+            score += 0.1
+        elif vol_ratio < 0.3:
+            score -= 0.2
+        if 0.001 <= volatility < 0.04:
+            score += 0.15
+
+        return {'score': min(1.0, max(0.0, score)),
+                'vol_ratio': vol_ratio, 'volatility': volatility}
     
     def _extract_market_conditions(self, market_data: Dict) -> Dict:
         """Extract key market metrics for LLM."""
@@ -2279,8 +2325,9 @@ class LLMTradingBot:
                         f"[{r.symbol}] Skipped: strategy-family exposure limit reached"
                     )
                     continue
-                self.execute_trade(r.symbol, decision)
-                trades_made += 1
+                pos_id = self.execute_trade(r.symbol, decision)
+                if pos_id is not None:
+                    trades_made += 1
 
                 # Re-check portfolio risk after each trade
                 can_trade, _ = self.check_portfolio_risk()

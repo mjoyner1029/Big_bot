@@ -57,7 +57,9 @@ class ScannerConfig:
     # from OHLC bar range — it is NOT bid/ask spread (no quote data here).
     max_bar_range_pct:    float = 0.05            # 5% max intrabar high-low range
     # Volatility filter (ATR as % of price)
-    min_atr_pct:          float = 0.005           # 0.5% min ATR (too flat = no edge)
+    # This scanner consumes 5-minute bars. A 0.5% floor was calibrated like
+    # an hourly threshold and rejected liquid majors in ordinary markets.
+    min_atr_pct:          float = 0.0005          # 0.05% min 5m ATR
     max_atr_pct:          float = 0.08            # 8% max ATR (too wild = unmanageable)
     # Momentum window (bars)
     momentum_period:      int   = 14
@@ -125,6 +127,7 @@ class UniverseScanner:
     def __init__(self, config: Optional[ScannerConfig] = None):
         self.config  = config or ScannerConfig()
         self._cache: Dict[str, Tuple[datetime, List[Candidate]]] = {}
+        self.last_rejections: Dict[str, str] = {}
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -147,6 +150,7 @@ class UniverseScanner:
                 return cached_result[:top_n]
 
         logger.info("UniverseScanner: starting full universe scan...")
+        self.last_rejections = {}
         all_candidates = []
 
         if self.config.include_crypto:
@@ -164,6 +168,8 @@ class UniverseScanner:
             f"UniverseScanner: top {len(top)} candidates: "
             + ", ".join(f"{c.symbol}({c.opportunity_score:.2f})" for c in top)
         )
+        if self.last_rejections:
+            logger.info("UniverseScanner rejection reasons: %s", self.last_rejections)
         return top
 
     def get_symbols(self, top_n: Optional[int] = None) -> List[str]:
@@ -183,7 +189,8 @@ class UniverseScanner:
                 if candidate is not None:
                     candidates.append(candidate)
             except Exception as e:
-                logger.debug(f"UniverseScanner: skipping {symbol} — {e}")
+                self.last_rejections[symbol] = f"SCAN_ERROR: {e}"
+                logger.warning(f"UniverseScanner: skipping {symbol} — {e}")
 
         return candidates
 
@@ -197,30 +204,35 @@ class UniverseScanner:
         from data.fetcher import fetch_latest_market_data
         df = fetch_latest_market_data(symbol, period="5d", interval="5m")
 
-        if df is None or len(df) < 50:
+        def reject(reason):
+            self.last_rejections[symbol] = reason
             return None
+
+        if df is None or len(df) < 50:
+            return reject("INSUFFICIENT_HISTORY")
 
         price  = float(df["close"].iloc[-1])
         if price <= 0:
-            return None
+            return reject("INVALID_PRICE")
 
         # ── Liquidity filter ──────────────────────────────────────────────────
         # Approximate 24h volume in USD from 5m bars (288 bars = 1 day)
         recent = df.iloc[-288:] if len(df) >= 288 else df
         vol_usd_24h = float((recent["volume"] * recent["close"]).sum())
         if vol_usd_24h < self.config.min_volume_usd_24h:
-            return None
+            return reject(f"LOW_VOLUME: ${vol_usd_24h:,.0f} < ${self.config.min_volume_usd_24h:,.0f}")
 
         # ── Intrabar-range filter (OHLC liquidity-risk proxy, NOT bid/ask) ────
         last_bar      = df.iloc[-1]
         bar_range_pct = (float(last_bar["high"]) - float(last_bar["low"])) / price
         if bar_range_pct > self.config.max_bar_range_pct:
-            return None
+            return reject(f"BAR_RANGE: {bar_range_pct:.3%} > {self.config.max_bar_range_pct:.3%}")
 
         # ── ATR-based volatility filter ───────────────────────────────────────
         atr_pct = self._compute_atr_pct(df, price, period=14)
         if atr_pct < self.config.min_atr_pct or atr_pct > self.config.max_atr_pct:
-            return None
+            return reject(f"ATR_OUT_OF_RANGE: {atr_pct:.3%}, allowed "
+                          f"{self.config.min_atr_pct:.3%}–{self.config.max_atr_pct:.3%}")
 
         # ── Scoring ───────────────────────────────────────────────────────────
         momentum     = self._momentum_score(df)

@@ -32,7 +32,7 @@ def main() -> int:
 
     from core.instruments import InstrumentUniverse
     from core.research_campaign import CampaignConfig, ResearchCampaignRunner
-    from data.fetcher import fetch_latest_market_data
+    from data.history import fetch_research_history
 
     universe = InstrumentUniverse()
     instruments = (universe.crypto()
@@ -44,7 +44,7 @@ def main() -> int:
     data = {}
     for inst in instruments:
         try:
-            df = fetch_latest_market_data(inst.symbol, period=args.period,
+            df = fetch_research_history(inst.symbol, period=args.period,
                                           interval=args.interval)
             if df is not None and len(df) >= 200:
                 data[inst.symbol] = df

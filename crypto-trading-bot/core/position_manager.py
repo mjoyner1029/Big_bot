@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS positions (
     strategy            TEXT,
     strategy_version    TEXT,
     strategies_used     TEXT,
+    signal              TEXT    NOT NULL,
     side                TEXT,
     direction           TEXT,
     size                REAL    NOT NULL,
@@ -92,10 +93,16 @@ class PositionManager:
         cursor = conn.execute("PRAGMA table_info(positions)")
         existing = {row[1] for row in cursor.fetchall()}
         additions = {
+            'signal':                "TEXT",
             'asset_class':           "TEXT DEFAULT 'crypto'",
             'strategy':              "TEXT",
             'strategy_version':      "TEXT",
             'strategies_used':       "TEXT",
+            'direction':             "TEXT",
+            'stop_loss':             "REAL",
+            'take_profit':           "REAL",
+            'max_price':             "REAL",
+            'close_reason':          "TEXT",
             'fees':                  "REAL DEFAULT 0.0",
             'entry_fees':            "REAL DEFAULT 0.0",
             'exit_fees':             "REAL DEFAULT 0.0",
@@ -156,13 +163,13 @@ class PositionManager:
             cur = conn.execute(
                 """INSERT INTO positions
                    (symbol, asset_class, strategy, strategy_version, strategies_used,
-                    side, direction, size, entry_price, entry_fill_price, entry_time,
+                    signal, side, direction, size, entry_price, entry_fill_price, entry_time,
                     stop_loss, take_profit, max_price, regime, confidence,
                     kronos_confidence, llm_decision, broker_order_id, entry_fees,
                     features_json, ml_prediction, status)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN')""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN')""",
                 (symbol, asset_class, strategy, strategy_version, strats_json,
-                 signal, direction, size, entry_price, actual_fill, _utcnow(),
+                 signal, signal, direction, size, entry_price, actual_fill, _utcnow(),
                  stop_loss, take_profit, entry_price, regime, confidence,
                  kronos_confidence, llm_decision, broker_order_id, entry_fees,
                  features_json, ml_prediction),

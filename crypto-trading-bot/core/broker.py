@@ -321,12 +321,22 @@ class PaperBroker(Broker):
         notional = fill_price * order.quantity
         fees     = notional * self.fee_pct
 
-        # Buying power check
-        if order.side == "BUY" and (notional + fees) > self.cash:
+        # Margin check applies only to newly increased exposure. Reducing a
+        # long or covering a short must always remain possible.
+        current = self._positions.get(order.symbol)
+        current_signed = 0.0
+        if current is not None:
+            current_signed = current.quantity if current.side == "LONG" else -current.quantity
+        delta = order.quantity if order.side == "BUY" else -order.quantity
+        new_signed = current_signed + delta
+        increasing_exposure = abs(new_signed) > abs(current_signed)
+        available = self.get_account().buying_power
+        required = (abs(new_signed) - abs(current_signed)) * fill_price + fees
+        if increasing_exposure and required > available:
             order.status = OrderStatus.REJECTED
             order.reject_reason = (
-                f"Insufficient buying power: need ${notional+fees:.2f}, "
-                f"available ${self.cash:.2f}"
+                f"Insufficient buying power: need ${required:.2f}, "
+                f"available ${available:.2f}"
             )
             self._orders[order.order_id] = order
             logger.warning(f"PaperBroker: REJECTED {order.order_id} — {order.reject_reason}")
@@ -360,27 +370,38 @@ class PaperBroker(Broker):
     # ── Position update helpers ───────────────────────────────────────────────
 
     def _apply_fill(self, order: Order, fill_price: float, fees: float) -> None:
-        if order.side == "BUY":
-            self.cash -= (fill_price * order.quantity + fees)
-            pos = self._positions.get(order.symbol)
-            if pos:
-                total = pos.quantity + order.quantity
-                pos.avg_price = (pos.avg_price * pos.quantity + fill_price * order.quantity) / total
-                pos.quantity  = total
-            else:
-                self._positions[order.symbol] = BrokerPosition(
-                    symbol=order.symbol, side="LONG",
-                    quantity=order.quantity, avg_price=fill_price,
-                    market_value=fill_price * order.quantity,
-                    unrealized_pnl=0.0,
-                )
-        else:  # SELL
-            self.cash += (fill_price * order.quantity - fees)
-            pos = self._positions.get(order.symbol)
-            if pos:
-                pos.quantity = round(pos.quantity - order.quantity, 10)
-                if pos.quantity <= 1e-10:
-                    del self._positions[order.symbol]
+        notional = fill_price * order.quantity
+        self.cash += (notional - fees) if order.side == "SELL" else -(notional + fees)
+
+        pos = self._positions.get(order.symbol)
+        old_signed = 0.0 if pos is None else (
+            pos.quantity if pos.side == "LONG" else -pos.quantity)
+        delta = order.quantity if order.side == "BUY" else -order.quantity
+        new_signed = old_signed + delta
+        if abs(new_signed) <= 1e-10:
+            self._positions.pop(order.symbol, None)
+            return
+
+        new_side = "LONG" if new_signed > 0 else "SHORT"
+        new_quantity = abs(new_signed)
+        same_direction = old_signed == 0 or (old_signed > 0) == (delta > 0)
+        flipped = old_signed != 0 and (old_signed > 0) != (new_signed > 0)
+        if pos is None or flipped:
+            avg_price = fill_price
+        elif same_direction:
+            avg_price = (
+                pos.avg_price * abs(old_signed) + fill_price * abs(delta)
+            ) / new_quantity
+        else:
+            avg_price = pos.avg_price
+        self._positions[order.symbol] = BrokerPosition(
+            symbol=order.symbol,
+            side=new_side,
+            quantity=new_quantity,
+            avg_price=avg_price,
+            market_value=(1 if new_side == "LONG" else -1) * new_quantity * fill_price,
+            unrealized_pnl=0.0,
+        )
 
     # ── CRUD ─────────────────────────────────────────────────────────────────
 
@@ -405,11 +426,16 @@ class PaperBroker(Broker):
         return list(self._positions.values())
 
     def get_account(self) -> AccountState:
-        market_value = sum(p.quantity * p.avg_price for p in self._positions.values())
+        market_value = sum(
+            p.quantity * p.avg_price * (1 if p.side == "LONG" else -1)
+            for p in self._positions.values())
+        gross_exposure = sum(
+            p.quantity * p.avg_price for p in self._positions.values())
+        equity = self.cash + market_value
         return AccountState(
             cash=self.cash,
-            equity=self.cash + market_value,
-            buying_power=self.cash,
+            equity=equity,
+            buying_power=max(0.0, equity - gross_exposure),
             positions=list(self._positions.values()),
         )
 
@@ -428,12 +454,13 @@ class PaperBroker(Broker):
                 reject_reason=f"No broker position for {symbol}",
             )
         qty = quantity if quantity else pos.quantity
-        order = Order(symbol=symbol, side="SELL", quantity=qty, fill_price=current_price)
+        close_side = "SELL" if pos.side == "LONG" else "BUY"
+        order = Order(symbol=symbol, side=close_side, quantity=qty, fill_price=current_price)
         order = self.submit_order(order)
         return FillResult(
             order_id=order.order_id,
             symbol=symbol,
-            side="SELL",
+            side=close_side,
             fill_price=order.fill_price or current_price,
             fill_quantity=order.fill_quantity,
             notional=order.notional,

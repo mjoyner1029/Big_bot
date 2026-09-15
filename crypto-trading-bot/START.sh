@@ -30,16 +30,18 @@ cd "$PROJECT_ROOT"
 MODE_OVERRIDE=""
 SMOKE_FLAG=""
 
-for arg in "$@"; do
-  case "$arg" in
-    --mode=*)  MODE_OVERRIDE="${arg#--mode=}" ;;
-    --mode)    shift; MODE_OVERRIDE="${1:-}" ;;
-    --smoke)   SMOKE_FLAG="--smoke" ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode=*)  MODE_OVERRIDE="${1#--mode=}"; shift ;;
+    --mode)
+      [[ $# -ge 2 ]] || { echo "--mode requires a value"; exit 1; }
+      MODE_OVERRIDE="$2"; shift 2 ;;
+    --smoke)   SMOKE_FLAG="--smoke"; shift ;;
     --help|-h)
       echo "Usage: ./START.sh [--mode PAPER|SHADOW|BACKTEST|LIVE] [--smoke]"
       exit 0 ;;
     *)
-      echo "Unknown argument: $arg"
+      echo "Unknown argument: $1"
       echo "Usage: ./START.sh [--mode PAPER|SHADOW|BACKTEST|LIVE] [--smoke]"
       exit 1 ;;
   esac
@@ -165,12 +167,6 @@ if ! "$PYTHON" scripts/preflight.py $PREFLIGHT_ARGS; then
   exit 1
 fi
 
-# ── Kill existing instances ───────────────────────────────────────────────────
-pkill -f paper_trade_v3.py      2>/dev/null || true
-pkill -f ultimate_bot_v3_llm.py 2>/dev/null || true
-pkill -f live_test_v3.py        2>/dev/null || true
-sleep 1
-
 # ── Select entrypoint ─────────────────────────────────────────────────────────
 BOT_LOG="logs/bot.log"
 mkdir -p logs
@@ -214,12 +210,16 @@ echo "  Stop:     pkill -f $ENTRYPOINT_FILE"
 echo ""
 
 # shellcheck disable=SC2086
-"$PYTHON" $ENTRYPOINT >> "$BOT_LOG" 2>&1 &
+nohup "$PYTHON" $ENTRYPOINT >> "$BOT_LOG" 2>&1 </dev/null &
 BOT_PID=$!
 
 mkdir -p pids
 EXEC_MODE_LOWER=$(echo "$EXEC_MODE" | tr '[:upper:]' '[:lower:]')
-echo "$BOT_PID" > "pids/bot_${EXEC_MODE_LOWER}.pid"
+# The paper entrypoint owns and locks its PID file. Writing it here would race
+# the lock owner and could replace the active PID when a duplicate start fails.
+if [[ "$EXEC_MODE" != "PAPER" && "$EXEC_MODE" != "SHADOW" ]]; then
+  echo "$BOT_PID" > "pids/bot_${EXEC_MODE_LOWER}.pid"
+fi
 
 sleep 2
 

@@ -711,7 +711,6 @@ def check_smoke_pipeline(mode: str) -> List[CheckResult]:
     try:
         from core.trade_memory import TradeMemory
         tm = TradeMemory()
-        tm.close()
         results.append(_pass("Smoke: TradeMemory init"))
     except Exception as e:
         results.append(_warn("Smoke: TradeMemory init", str(e)))

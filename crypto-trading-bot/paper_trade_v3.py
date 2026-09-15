@@ -4,10 +4,12 @@ Paper Trading - Test bot with real-time data but fake money
 Logs all trades without actual execution
 """
 import os
+import fcntl
 import time
 import signal
 import logging
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env file
@@ -19,6 +21,7 @@ if not os.getenv('ANTHROPIC_API_KEY'):
     os.environ['ANTHROPIC_API_KEY'] = 'test-key'
 
 from ultimate_bot_v3_llm import LLMTradingBot
+from core.paper_maintenance import PaperMaintenance
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,32 +33,96 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_PID_LOCKS = {}
+
+
+def _claim_pid(path="pids/bot_paper.pid"):
+    pid_path = Path(path)
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    key = str(pid_path.resolve())
+    if key in _PID_LOCKS:
+        raise RuntimeError(f"Paper bot already running with PID {os.getpid()}")
+    handle = pid_path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        existing = handle.read().strip() or "unknown"
+        handle.close()
+        raise RuntimeError(f"Paper bot already running with PID {existing}")
+    handle.seek(0)
+    raw = handle.read().strip()
+    if raw:
+        try:
+            existing = int(raw)
+            if existing != os.getpid():
+                try:
+                    os.kill(existing, 0)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    raise RuntimeError(
+                        f"Paper bot already running with PID {existing}")
+                else:
+                    raise RuntimeError(
+                        f"Paper bot already running with PID {existing}")
+        except (ValueError, ProcessLookupError):
+            pass
+        except Exception:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+            raise
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    os.fsync(handle.fileno())
+    _PID_LOCKS[key] = handle
+    return pid_path
+
+
+def _release_pid(pid_path):
+    key = str(Path(pid_path).resolve())
+    handle = _PID_LOCKS.pop(key, None)
+    try:
+        if int(pid_path.read_text().strip()) == os.getpid():
+            pid_path.unlink()
+    except (OSError, ValueError):
+        pass
+    if handle is not None:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _handle_shutdown(signum, _frame):
+    logger.info("Shutdown signal %s received", signum)
+    raise KeyboardInterrupt
+
 def main():
     """Run paper trading."""
     logger.info("="*70)
     logger.info("PAPER TRADING MODE - Real data, fake money")
     logger.info("="*70)
     
-    # Initialize bot
-    bot = LLMTradingBot(capital=float(os.getenv("TRADING_CAPITAL", "2000")))
-    
-    # Override execute_trade to NOT actually trade
-    original_execute = bot.execute_trade
-    
-    def paper_execute_trade(symbol, decision):
-        """Mock execution - just log, don't trade."""
-        logger.info(f"\n📝 PAPER TRADE:")
-        logger.info(f"   Symbol: {symbol}")
-        logger.info(f"   Signal: {decision['signal']}")
-        logger.info(f"   Size: ${decision['size']:.2f}")
-        logger.info(f"   Price: ${decision['price']:.2f}")
-        logger.info(f"   (NOT EXECUTED - Paper trading mode)")
-        
-        # Still track in database for testing
-        return original_execute(symbol, decision)
-    
-    bot.execute_trade = paper_execute_trade
-    
+    # Pin the broker before construction; this entry point cannot route live orders.
+    if os.environ.get("TRADING_MODE", "").upper() == "LIVE":
+        raise RuntimeError("Paper runner refuses TRADING_MODE=LIVE")
+    os.environ["TRADING_MODE"] = "PAPER"
+    pid_path = _claim_pid()
+    try:
+        from core.broker import PaperBroker
+        bot = LLMTradingBot(capital=float(os.getenv("TRADING_CAPITAL", "2000")))
+        if not isinstance(bot.broker, PaperBroker):
+            raise RuntimeError("Paper runner requires PaperBroker")
+        bot._initialize_core_accounting()
+        bot._startup_reconciliation()
+        maintenance = PaperMaintenance()
+    except Exception:
+        _release_pid(pid_path)
+        raise
+
     # Track paper performance
     start_time = datetime.now()
     cycles_run = 0
@@ -65,12 +132,15 @@ def main():
     logger.info(f"   Capital: ${bot.capital:,.0f} (paper)")
     logger.info(f"   Cycle: Every 5 minutes")
     logger.info("")
-    
+
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+
     try:
         # Morning regime analysis
         bot.daily_regime_analysis()
         
         while True:
+            maintenance.tick(bot)
             cycles_run += 1
             logger.info(f"\n{'='*70}")
             logger.info(f"PAPER TRADING CYCLE #{cycles_run}")
@@ -98,7 +168,10 @@ def main():
         logger.info("\n\n⚠️ Paper trading stopped by user")
         
         # End of day learning
-        bot.end_of_day_learning()
+        try:
+            bot.end_of_day_learning()
+        except Exception as exc:
+            logger.warning(f"End-of-day learning failed during shutdown: {exc}")
         
         # Summary
         runtime = (datetime.now() - start_time).total_seconds() / 3600
@@ -112,6 +185,8 @@ def main():
         logger.info(f"\n✅ Check logs/paper_trade.log for full details")
         logger.info(f"✅ Check data/trade_memory.sqlite for trade history")
         logger.info(f"{'='*70}")
+    finally:
+        _release_pid(pid_path)
 
 if __name__ == '__main__':
     main()

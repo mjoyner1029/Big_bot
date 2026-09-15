@@ -12,6 +12,7 @@ batched (campaign-global FDR/dedup/graveyard context) and checkpoint/resumable.
 Zero promotions is a valid outcome.
 """
 from __future__ import annotations
+from core.ohlcv import normalize_ohlcv
 
 import json
 import logging
@@ -202,9 +203,11 @@ class ResearchCampaignRunner:
         # 1. Data quality gate
         clean: Dict[str, pd.DataFrame] = {}
         for symbol, df in sorted(data.items()):
-            work = df.copy()
-            work.columns = [str(c).lower() for c in work.columns]
-            work = work.loc[:, ~work.columns.duplicated()]
+            try:
+                work = normalize_ohlcv(df)
+            except ValueError:
+                reject(RejectReason.DATA_QUALITY_FAILURE)
+                continue
             result = self.data_quality.check(work, symbol=symbol,
                                              timeframe=cfg.data_timeframe)
             if result.passed and len(work) >= 100:
